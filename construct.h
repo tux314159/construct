@@ -163,7 +163,7 @@ struct Target {
 	char *cmd;
 	struct Array deps;
 	struct Array codeps; // NOTE: array of struct Target *
-	size_t n_sat_dep;
+	size_t *n_sat_dep;
 	char visited;
 };
 
@@ -187,7 +187,7 @@ add_target(struct Depgraph *graph, struct Target *target);
 
 /* Build the dependency graph, checking modification timestamps */
 void
-build_graph(struct Depgraph *graph, const char *final);
+build_graph(struct Depgraph *graph, const char *final, int max_jobs);
 
 // }}}
 

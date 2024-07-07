@@ -6,11 +6,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <fcntl.h>
+#include <semaphore.h>
+#include <unistd.h>
+
+#include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 #include "construct.h"
 
-// Malloc wrappers {{{
+// Primitive wrappers, abort on failure {{{
 
 static void *
 malloc_s(size_t n)
@@ -50,6 +56,16 @@ strdup_s(const char *s)
 	if (!ns)
 		abort();
 	return ns;
+}
+
+static pid_t
+fork_s(void)
+{
+	pid_t pid;
+	pid = fork();
+	if (pid == -1)
+		abort();
+	return pid;
 }
 
 // }}}
@@ -409,7 +425,7 @@ make_target(const char *name, const char *cmd, ...)
 	array_init(&target->deps);
 	array_init(&target->codeps);
 
-	target->n_sat_dep = 0;
+	target->n_sat_dep = NULL;
 	target->visited = 0;
 
 	va_start(args, cmd);
@@ -434,110 +450,191 @@ add_target(struct Depgraph *graph, struct Target *target)
 }
 
 void
-build_graph(struct Depgraph *graph, const char *final)
+build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 {
 	struct Queue queue;
 	struct Array leaves;
-	struct Target **final_targ;
 	struct stat sb;
+	struct {
+		size_t dep_cnt_sz;
+		size_t *dep_cnt;
+	} shm;
 
 	queue_init(&queue, graph->n_targets);
 	array_init(&leaves);
 
-	// BFS from the final target
-	final_targ = (struct Target **)table_find(&graph->targets, final);
-	if (!final_targ)
-		die("Bad target: %s", final);
-	queue_push(&queue, *final_targ);
-	(*final_targ)->visited = 1;
-	while (queue_len(&queue)) {
-		struct Target *targ, *new;
+	// Allocate shared memory
+	{
+		int tmpfile;
+		char tmpfile_name[] = "construct-XXXXXX";
 
-		targ = queue_pop(&queue);
-		if (targ->deps.len == 0)
-			array_push(&leaves, targ); // collate leaves
+		shm.dep_cnt_sz = graph->n_targets * sizeof(*shm.dep_cnt);
 
-		for (size_t i = 0; i < targ->deps.len; i++) {
-			struct Target **c;
-			c = (struct Target **)
-				table_find(&graph->targets, targ->deps.data[i]);
-			if (!c) {
-				// If sought-after dependency doesn't exist, it may
-				// be a source file, try to find and add it
-				if (stat(targ->deps.data[i], &sb) == -1)
-					die("Bad target: %s", (char *)targ->deps.data[i]);
-				new = make_target(targ->deps.data[i], NULL, NULL);
-				add_target(graph, new);
-				c = &new;
-			}
-			array_push(&(*c)->codeps, targ); // fill up codeps
+		tmpfile = mkstemp(tmpfile_name);
+		if (tmpfile == -1)
+			abort();
 
-			if (!(*c)->visited) {
-				queue_push(&queue, *c);
-				(*c)->visited = 1;
+		shm.dep_cnt = mmap(
+			NULL,
+			shm.dep_cnt_sz,
+			PROT_READ | PROT_WRITE,
+			MAP_SHARED,
+			tmpfile,
+			0
+		);
+
+		unlink(tmpfile_name);
+
+		if (ftruncate(tmpfile, (off_t)shm.dep_cnt_sz) == -1)
+			abort();
+		close(tmpfile);
+
+		if (!shm.dep_cnt)
+			abort();
+	}
+
+	// BFS from the final target, prune, and find leaves
+	{
+		struct Target **final_targ;
+		size_t shm_idx;
+
+		final_targ = (struct Target **)table_find(&graph->targets, targ_name);
+		if (!final_targ)
+			die("Bad target: %s", targ_name);
+		queue_push(&queue, *final_targ);
+		(*final_targ)->visited = 1;
+		shm_idx = 0;
+
+		while (queue_len(&queue)) {
+			struct Target *targ, *new;
+
+			targ = queue_pop(&queue);
+			if (targ->deps.len == 0)
+				array_push(&leaves, targ); // collate leaves
+			else
+				targ->n_sat_dep = shm.dep_cnt + (shm_idx++);
+
+			for (size_t i = 0; i < targ->deps.len; i++) {
+				struct Target **c;
+				c = (struct Target **)
+					table_find(&graph->targets, targ->deps.data[i]);
+				if (!c) {
+					// If sought-after dependency doesn't exist, it may
+					// be a source file, try to find and add it
+					if (stat(targ->deps.data[i], &sb) == -1)
+						die("Bad target: %s", (char *)targ->deps.data[i]);
+					new = make_target(targ->deps.data[i], NULL, NULL);
+					add_target(graph, new);
+					c = &new;
+				}
+				array_push(&(*c)->codeps, targ); // fill up codeps
+
+				if (!(*c)->visited) {
+					queue_push(&queue, *c);
+					(*c)->visited = 1;
+				}
 			}
 		}
 	}
 
-	// Multisource BFS from each source
-	// NOTE: visited is flipped
 	queue_clear(&queue);
-	for (size_t i = 0; i < leaves.len; i++) {
-		queue_push(&queue, leaves.data[i]); // start from each leaf
-		((struct Target *)(leaves.data[i]))->visited = 0;
-	}
 
-	while (queue_len(&queue)) {
-		struct Target *targ;
-		struct timespec targ_mtim;
-		int out_of_date;
+	// Execute build plan
+	{
+		int pipefds[2];
+		int cur_jobs;
 
-		// For every target depending on us we keep track of the
-		// number of satisfied targets and only build it if all
-		// its targets are satisfied
-		targ = queue_pop(&queue);
-		if (targ->n_sat_dep < targ->deps.len) {
-			queue_push(&queue, targ); // push it back to the back
-			continue;
+		// We use a pipe here to communicate exit status, because we want
+		// to terminate immediately after an error; we are only waiting
+		// if we are at max_jobs
+		if (pipe(pipefds) == -1)
+			abort();
+		fcntl(pipefds[0], F_SETFL, fcntl(pipefds[0], F_GETFL, 0) | O_NONBLOCK);
+
+		// Multisource BFS from each source
+		// NOTE: visited is flipped
+		for (size_t i = 0; i < leaves.len; i++) {
+			queue_push(&queue, leaves.data[i]); // start from each leaf
+			((struct Target *)(leaves.data[i]))->visited = 0;
 		}
 
-		// Check if any dependencies are younger
-		if (stat(targ->name, &sb) == -1) { // doesn't exist
-			targ_mtim.tv_sec = 0;
-			targ_mtim.tv_nsec = 0;
-		} else {
-			targ_mtim = sb.st_mtim;
-		}
+		cur_jobs = 0;
+		while (queue_len(&queue)) {
+			struct Target *targ;
+			struct timespec targ_mtim;
+			int out_of_date;
+			pid_t pid;
+			char child_status;
 
-		out_of_date = 0;
-		for (size_t i = 0; i < targ->deps.len; i++) {
-			struct Target *dep;
-			dep = *(struct Target **)
-					  table_find(&graph->targets, targ->deps.data[i]);
-			out_of_date |= stat(dep->name, &sb) == -1;
-			out_of_date |= targ_mtim.tv_sec < sb.st_mtim.tv_sec;
-			out_of_date |=
-				(targ_mtim.tv_sec == sb.st_mtim.tv_sec &&
-			     targ_mtim.tv_nsec < sb.st_mtim.tv_nsec);
-		}
+			// Block and wait for jobs to terminate if at max
+			while (cur_jobs >= max_jobs) {
+				wait(NULL);
+				cur_jobs--;
+			}
 
-		if (out_of_date && targ->cmd) {
-			log(msgt_raw, "%s", targ->cmd);
-			system(targ->cmd);
-		}
+			while (read(pipefds[0], &child_status, 1) != -1)
+				if (child_status)
+					exit(1);
 
-		for (size_t i = 0; i < targ->codeps.len; i++) {
-			struct Target *c;
-
-			c = targ->codeps.data[i];
-			c->n_sat_dep++;
-
-			if (!c->visited)
+			// For every target depending on us we keep track of the
+			// number of satisfied targets and only build it if all
+			// its targets are satisfied
+			targ = queue_pop(&queue);
+			if (targ->n_sat_dep && *targ->n_sat_dep < targ->deps.len) {
+				queue_push(&queue, targ); // push it back to the back
 				continue;
-			c->visited = 0;
-			queue_push(&queue, c);
+			}
+
+			// Check if any dependencies are younger
+			if (stat(targ->name, &sb) == -1) { // doesn't exist
+				targ_mtim.tv_sec = 0;
+				targ_mtim.tv_nsec = 0;
+			} else {
+				targ_mtim = sb.st_mtim;
+			}
+
+			out_of_date = 0;
+			for (size_t i = 0; i < targ->deps.len; i++) {
+				struct Target *dep;
+				dep = *(struct Target **)
+						  table_find(&graph->targets, targ->deps.data[i]);
+				out_of_date |= stat(dep->name, &sb) == -1;
+				out_of_date |= targ_mtim.tv_sec < sb.st_mtim.tv_sec;
+				out_of_date |=
+					(targ_mtim.tv_sec == sb.st_mtim.tv_sec &&
+				     targ_mtim.tv_nsec < sb.st_mtim.tv_nsec);
+			}
+
+			if ((pid = fork_s())) {
+				cur_jobs++;
+				for (size_t i = 0; i < targ->codeps.len; i++) {
+					struct Target *c;
+					c = targ->codeps.data[i];
+					if (!c->visited)
+						continue;
+					c->visited = 0;
+					queue_push(&queue, c);
+				}
+			} else {
+				int status;
+				if (out_of_date && targ->cmd) {
+					log(msgt_raw, "%s", targ->cmd);
+					status = WEXITSTATUS(system(targ->cmd));
+					write(pipefds[1], &status, 1);
+				}
+
+				for (size_t i = 0; i < targ->codeps.len; i++) {
+					struct Target *c;
+					c = targ->codeps.data[i];
+					(*c->n_sat_dep)++;
+				}
+
+				_exit(0);
+			}
 		}
 	}
+
+	munmap(shm.dep_cnt, shm.dep_cnt_sz);
 	queue_destroy(&queue);
 	array_destroy(&leaves);
 }
@@ -558,12 +655,12 @@ main(int argc, char **argv)
 	graph_init(&graph);
 	target("testproj/main",
 			needs("testproj/main.o", "testproj/hello.o", "testproj/mymath.o"),
-			"cc -o $@ $^");
+			"cc -o $@ $^ && sleep 1");
 	target("testproj/main.o", needs("testproj/main.c", "testproj/hello.h"),
-			"cc -c -o $@ $<");
+			"cc -c -o $@ $< && sleep 1");
 	target("testproj/hello.o", needs("testproj/hello.c", "testproj/hello.h"),
-			"cc -c -o $@ $<");
+			"cc -c -o $@ $< && sleep 1");
 	target("testproj/mymath.o", needs("testproj/mymath.c", "testproj/mymath.h"),
-			"cc -c -o $@ $<");
-	build_graph(&graph, "testproj/main");
+			"cc -c -o $@ $< && sleep 1");
+	build_graph(&graph, "testproj/main", 2);
 }

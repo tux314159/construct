@@ -32,3 +32,4 @@
 -Wno-format-extra-args
 -Wno-unused-function
 -Wwrite-strings
+-Wstrict-aliasing
