@@ -457,7 +457,7 @@ build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 	struct stat sb;
 	struct {
 		size_t dep_cnt_sz;
-		size_t *dep_cnt;
+		_Atomic size_t *dep_cnt;
 	} shm;
 
 	queue_init(&queue, graph->n_targets);
@@ -466,7 +466,7 @@ build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 	// Allocate shared memory
 	{
 		int tmpfile;
-		char tmpfile_name[] = "construct-XXXXXX";
+		char tmpfile_name[] = "/tmp/construct-XXXXXX";
 
 		shm.dep_cnt_sz = graph->n_targets * sizeof(*shm.dep_cnt);
 
@@ -655,12 +655,12 @@ main(int argc, char **argv)
 	graph_init(&graph);
 	target("testproj/main",
 			needs("testproj/main.o", "testproj/hello.o", "testproj/mymath.o"),
-			"cc -o $@ $^ && sleep 1");
+			"cc -o $@ $^ && sleep 0.1");
 	target("testproj/main.o", needs("testproj/main.c", "testproj/hello.h"),
-			"cc -c -o $@ $< && sleep 1");
+			"cc -c -o $@ $< && sleep 0.1");
 	target("testproj/hello.o", needs("testproj/hello.c", "testproj/hello.h"),
-			"cc -c -o $@ $< && sleep 1");
+			"cc -c -o $@ $< && sleep 0.1");
 	target("testproj/mymath.o", needs("testproj/mymath.c", "testproj/mymath.h"),
-			"cc -c -o $@ $< && sleep 1");
+			"cc -c -o $@ $< && sleep 0.1");
 	build_graph(&graph, "testproj/main", 2);
 }

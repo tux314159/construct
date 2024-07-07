@@ -163,7 +163,7 @@ struct Target {
 	char *cmd;
 	struct Array deps;
 	struct Array codeps; // NOTE: array of struct Target *
-	size_t *n_sat_dep;
+	_Atomic size_t *n_sat_dep;
 	char visited;
 };
 
