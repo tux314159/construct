@@ -1,6 +1,7 @@
 /* Single file build system (plus header) */
 
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -457,7 +458,7 @@ build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 	struct stat sb;
 	struct {
 		size_t dep_cnt_sz;
-		_Atomic size_t *dep_cnt;
+		atomic_size_t *dep_cnt;
 	} shm;
 
 	queue_init(&queue, graph->n_targets);
@@ -491,6 +492,10 @@ build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 
 		if (!shm.dep_cnt)
 			abort();
+
+		for (atomic_size_t *c = shm.dep_cnt; c < shm.dep_cnt + graph->n_targets;
+		     c++)
+			atomic_init(c, 0);
 	}
 
 	// BFS from the final target, prune, and find leaves
@@ -626,7 +631,11 @@ build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 				for (size_t i = 0; i < targ->codeps.len; i++) {
 					struct Target *c;
 					c = targ->codeps.data[i];
-					(*c->n_sat_dep)++;
+					atomic_fetch_add_explicit(
+						c->n_sat_dep,
+						1,
+						memory_order_relaxed
+					);
 				}
 
 				_exit(0);

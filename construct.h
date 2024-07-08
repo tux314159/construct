@@ -1,6 +1,7 @@
 #ifndef INCLUDE_CONSTRUCT_H
 #define INCLUDE_CONSTRUCT_H
 
+#include <stdatomic.h>
 #include <stddef.h>
 
 // Pretty-printing/logging {{{
@@ -163,7 +164,7 @@ struct Target {
 	char *cmd;
 	struct Array deps;
 	struct Array codeps; // NOTE: array of struct Target *
-	_Atomic size_t *n_sat_dep;
+	atomic_size_t *n_sat_dep;
 	char visited;
 };
 
