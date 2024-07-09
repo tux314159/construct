@@ -370,6 +370,8 @@ format_cmd(const char *s, const char *name, struct Array *deps)
 	for (const char *c = s; c < s + strlen(s); c++) {
 		if (special) {
 			special = 0;
+			if (escaped)
+				continue;
 			switch (*c) {
 			case '@':
 				fprintf(res, "%s", name);
