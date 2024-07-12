@@ -1,16 +1,27 @@
 /* Single file build system */
 
-// Header {{{
-
 #ifndef INCLUDE_CONSTRUCT
 #define INCLUDE_CONSTRUCT
 
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <fcntl.h>
+#include <semaphore.h>
+#include <unistd.h>
+
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 
 // Pretty-printing/logging {{{
 
-/* ANSI escapes */
+// ANSI escapes
 #define T_DIM "\x1b[2m"
 #define T_BOLD "\x1b[1m"
 #define T_ITAL "\x1b[3m"
@@ -55,69 +66,17 @@ static const char *_msgtstr[msgt_end] =
 
 // }}}
 
-// Queues {{{
+// Datastructures {{{
 
 struct Queue {
 	void **in, **out, **inp, **outp, **base, **base2;
 };
 
-/* Initialise a queue with max capacity. */
-void
-queue_init(struct Queue *q, size_t size);
-
-/* Free a queue. */
-void
-queue_destroy(struct Queue *q);
-
-/* Push item into the back of the queue. */
-void
-queue_push(struct Queue *q, void *val);
-
-/* Pop item from the front of the queue. */
-void *
-queue_pop(struct Queue *q);
-
-/* Get length of a queue. */
-size_t
-queue_len(struct Queue *q);
-
-/* Clear a queue. */
-void
-queue_clear(struct Queue *q);
-
-// }}}
-
-// Dynamic arrays {{{
 struct Array {
 	size_t len;
 	size_t _cap;
 	void **data;
 };
-
-/* Initialise an array. */
-void
-array_init(struct Array *arr);
-
-/* Push element to back of array. */
-void
-array_push(struct Array *arr, void *item);
-
-/* Pop element from back of array. */
-void *
-array_pop(struct Array *arr);
-
-/* Destroy an array. */
-void
-array_destroy(struct Array *arr);
-
-// }}}
-
-// Hashtables {{{
-
-/*
- * Quick and dirty hash-tables, using linear probing. We'll just use djb2...
- * There are some tunables in the macros below.
- */
 
 #define TABLE_INIT_SLOTS 4
 #define TABLE_RESIZE_RATIO 70
@@ -135,34 +94,6 @@ struct Table {
 	struct TableEntry *more; /* unused half to avoid expensive copy */
 };
 
-/* Initialise a table. */
-int
-table_init(struct Table *tbl);
-
-/* Deallocate a table. */
-void
-table_destroy(struct Table *tbl);
-
-/* Find a value in a table, return a pointer to a pointer to it, and a NULL
- * pointer if it does not exist.
- * WARNING: If not NULL dereference this pointer immediately as it may be
- * shifted upon subsequent inserts! */
-void **
-table_find(struct Table *tbl, const char *key);
-
-/* Insert item into table. Key must be null-terminated and can be ephermal,
- * val is simply a pointer and will not be copied. */
-int
-table_insert(struct Table *tbl, const char *key, void *val);
-
-/* Remove item from table. */
-int
-table_delete(struct Table *tbl, const char *key);
-
-// }}}
-
-// Build system graph {{{
-
 struct Target {
 	char *name;
 	char *cmd;
@@ -177,41 +108,7 @@ struct Depgraph {
 	struct Table targets;
 };
 
-/* Initialise a dependency graph. */
-void
-graph_init(struct Depgraph *graph);
-
-/* Arglist contains list of dependencies.
- * WARNING: must end arglist with null! */
-struct Target *
-make_target(const char *name, const char *cmd, ...);
-
-/* Add target to a dependency graph */
-void
-add_target(struct Depgraph *graph, struct Target *target);
-
-/* Build the dependency graph, checking modification timestamps */
-void
-build_graph(struct Depgraph *graph, const char *final, int max_jobs);
-
 // }}}
-
-// }}}
-
-#include <stdarg.h>
-#include <stdatomic.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-#include <fcntl.h>
-#include <semaphore.h>
-#include <unistd.h>
-
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
 
 // Primitive wrappers, abort on failure {{{
 
@@ -359,6 +256,8 @@ array_destroy(struct Array *arr)
 // }}}
 
 // Hashtables {{{
+
+// Linear probing, not very fast, and a random hash algorithm
 
 static uint32_t
 djb2(const unsigned char *str)
@@ -854,12 +753,27 @@ build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 
 // }}}
 
-// DSL {{{
+// UI {{{
+// }}}
+
+// "DSL" {{{
+
+#define construction_site                 \
+	int main(int argc, char **argv)       \
+	{                                     \
+		struct Depgraph _construct_graph; \
+		graph_init(&_construct_graph);    \
+		(void)argc;                       \
+		(void)argv; // later
+
+#define construction_done }
+
+#define construct(target, njobs) build_graph(&_construct_graph, target, njobs)
 
 #define needs(...) __VA_ARGS__,
 #define nodeps
 #define target(name, deps, cmd) \
-	add_target(&graph, make_target(name, cmd, deps NULL))
+	add_target(&_construct_graph, make_target(name, cmd, deps NULL))
 
 // }}}
 
