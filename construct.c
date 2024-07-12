@@ -597,7 +597,11 @@ build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 				targ_mtim.tv_sec = 0;
 				targ_mtim.tv_nsec = 0;
 			} else {
+#ifdef __APPLE__ // piece of shit
+				targ_mtim = sb.st_mtimespec;
+#else
 				targ_mtim = sb.st_mtim;
+#endif
 			}
 
 			out_of_date = 0;
@@ -625,8 +629,10 @@ build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 			} else {
 				int status;
 				if (out_of_date && targ->cmd) {
+					int cmd_status;
 					log(msgt_raw, "%s", targ->cmd);
-					status = WEXITSTATUS(system(targ->cmd));
+					cmd_status = system(targ->cmd);
+					status = WEXITSTATUS(cmd_status);
 					write(pipefds[1], &status, 1);
 				}
 
