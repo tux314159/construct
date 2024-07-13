@@ -66,7 +66,7 @@ static const char *_msgtstr[msgt_end] =
 
 // }}}
 
-// Datastructures {{{
+// Data structures {{{
 
 struct Queue {
 	void **in, **out, **inp, **outp, **base, **base2;
@@ -547,208 +547,228 @@ add_target(struct Depgraph *graph, struct Target *target)
 	graph->n_targets++;
 }
 
-void
-build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
+struct DepCnts {
+	size_t dep_cnt_sz;
+	atomic_size_t *dep_cnt;
+};
+
+// Allocate shared memory needed to keep track of built deps
+struct DepCnts
+alloc_depcnts(size_t n)
 {
+	struct DepCnts shm;
+	int tmpfile;
+	char tmpfile_name[] = "/tmp/construct-XXXXXX";
+
+	shm.dep_cnt_sz = n * sizeof(*shm.dep_cnt);
+
+	tmpfile = mkstemp(tmpfile_name);
+	if (tmpfile == -1)
+		abort();
+
+	shm.dep_cnt = mmap(
+		NULL,
+		shm.dep_cnt_sz,
+		PROT_READ | PROT_WRITE,
+		MAP_SHARED,
+		tmpfile,
+		0
+	);
+
+	unlink(tmpfile_name);
+
+	if (ftruncate(tmpfile, (off_t)shm.dep_cnt_sz) == -1)
+		abort();
+	close(tmpfile);
+
+	if (!shm.dep_cnt)
+		abort();
+
+	for (atomic_size_t *c = shm.dep_cnt; c < shm.dep_cnt + n; c++)
+		atomic_init(c, 0);
+
+	return shm;
+}
+
+void free_depcnts(struct DepCnts shm)
+{
+	munmap(shm.dep_cnt, shm.dep_cnt_sz);
+}
+
+// BFS from the final target, prune, and find leaves
+struct Array
+prepare_graph(struct Depgraph *graph, const char *targ_name, struct DepCnts shm)
+{
+	struct Target **final_targ;
+	size_t shm_idx;
 	struct Queue queue;
 	struct Array leaves;
 	struct stat sb;
-	struct {
-		size_t dep_cnt_sz;
-		atomic_size_t *dep_cnt;
-	} shm;
 
 	queue_init(&queue, graph->n_targets);
 	array_init(&leaves);
 
-	// Allocate shared memory
-	{
-		int tmpfile;
-		char tmpfile_name[] = "/tmp/construct-XXXXXX";
+	final_targ = (struct Target **)table_find(&graph->targets, targ_name);
+	if (!final_targ)
+		die("bad target: %s", targ_name);
+	queue_push(&queue, *final_targ);
+	(*final_targ)->visited = 1;
+	shm_idx = 0;
 
-		shm.dep_cnt_sz = graph->n_targets * sizeof(*shm.dep_cnt);
+	while (queue_len(&queue)) {
+		struct Target *targ, *new;
 
-		tmpfile = mkstemp(tmpfile_name);
-		if (tmpfile == -1)
-			abort();
+		targ = queue_pop(&queue);
+		if (targ->deps.len == 0)
+			array_push(&leaves, targ); // collate leaves
+		else
+			targ->n_sat_dep = shm.dep_cnt + (shm_idx++);
 
-		shm.dep_cnt = mmap(
-			NULL,
-			shm.dep_cnt_sz,
-			PROT_READ | PROT_WRITE,
-			MAP_SHARED,
-			tmpfile,
-			0
-		);
+		for (size_t i = 0; i < targ->deps.len; i++) {
+			struct Target **c;
+			c = (struct Target **)
+				table_find(&graph->targets, targ->deps.data[i]);
+			if (!c) {
+				// If sought-after dependency doesn't exist, it may
+				// be a source file, try to find and add it
+				if (stat(targ->deps.data[i], &sb) == -1)
+					die("bad target: %s", (char *)targ->deps.data[i]);
+				new = make_target(targ->deps.data[i], NULL, NULL);
+				add_target(graph, new);
+				c = &new;
+			}
+			array_push(&(*c)->codeps, targ); // fill up codeps
 
-		unlink(tmpfile_name);
-
-		if (ftruncate(tmpfile, (off_t)shm.dep_cnt_sz) == -1)
-			abort();
-		close(tmpfile);
-
-		if (!shm.dep_cnt)
-			abort();
-
-		for (atomic_size_t *c = shm.dep_cnt; c < shm.dep_cnt + graph->n_targets;
-		     c++)
-			atomic_init(c, 0);
-	}
-
-	// BFS from the final target, prune, and find leaves
-	{
-		struct Target **final_targ;
-		size_t shm_idx;
-
-		final_targ = (struct Target **)table_find(&graph->targets, targ_name);
-		if (!final_targ)
-			die("Bad target: %s", targ_name);
-		queue_push(&queue, *final_targ);
-		(*final_targ)->visited = 1;
-		shm_idx = 0;
-
-		while (queue_len(&queue)) {
-			struct Target *targ, *new;
-
-			targ = queue_pop(&queue);
-			if (targ->deps.len == 0)
-				array_push(&leaves, targ); // collate leaves
-			else
-				targ->n_sat_dep = shm.dep_cnt + (shm_idx++);
-
-			for (size_t i = 0; i < targ->deps.len; i++) {
-				struct Target **c;
-				c = (struct Target **)
-					table_find(&graph->targets, targ->deps.data[i]);
-				if (!c) {
-					// If sought-after dependency doesn't exist, it may
-					// be a source file, try to find and add it
-					if (stat(targ->deps.data[i], &sb) == -1)
-						die("Bad target: %s", (char *)targ->deps.data[i]);
-					new = make_target(targ->deps.data[i], NULL, NULL);
-					add_target(graph, new);
-					c = &new;
-				}
-				array_push(&(*c)->codeps, targ); // fill up codeps
-
-				if (!(*c)->visited) {
-					queue_push(&queue, *c);
-					(*c)->visited = 1;
-				}
+			if (!(*c)->visited) {
+				queue_push(&queue, *c);
+				(*c)->visited = 1;
 			}
 		}
 	}
 
-	queue_clear(&queue);
+	return leaves;
+}
+
+void
+build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
+{
+	struct DepCnts shm;
+	struct Array leaves;
+	struct Queue queue;
+	struct stat sb;
+	int pipefds[2];
+	int cur_jobs;
+
+	shm = alloc_depcnts(graph->n_targets);
+	leaves = prepare_graph(graph, targ_name, shm);
 
 	// Execute build plan
-	{
-		int pipefds[2];
-		int cur_jobs;
+	queue_init(&queue, graph->n_targets);
 
-		// We use a pipe here to communicate exit status, because we want
-		// to terminate immediately after an error; we are only waiting
-		// if we are at max_jobs
-		if (pipe(pipefds) == -1)
-			abort();
-		fcntl(pipefds[0], F_SETFL, fcntl(pipefds[0], F_GETFL, 0) | O_NONBLOCK);
+	// We use a pipe here to communicate exit status, because we want
+	// to terminate immediately after an error; we are only waiting
+	// if we are at max_jobs
+	if (pipe(pipefds) == -1)
+		abort();
+	fcntl(pipefds[0], F_SETFL, fcntl(pipefds[0], F_GETFL, 0) | O_NONBLOCK);
 
-		// Multisource BFS from each source
-		// NOTE: visited is flipped
-		for (size_t i = 0; i < leaves.len; i++) {
-			queue_push(&queue, leaves.data[i]); // start from each leaf
-			((struct Target *)(leaves.data[i]))->visited = 0;
+	// Multisource BFS from each source
+	// NOTE: visited is flipped
+	for (size_t i = 0; i < leaves.len; i++) {
+		queue_push(&queue, leaves.data[i]); // start from each leaf
+		((struct Target *)(leaves.data[i]))->visited = 0;
+	}
+
+	cur_jobs = 0;
+	while (queue_len(&queue)) {
+		struct Target *targ;
+		struct timespec targ_mtim;
+		int out_of_date;
+		pid_t pid;
+		char child_status;
+
+		// Block and wait for jobs to terminate if at max
+		while (cur_jobs >= max_jobs) {
+			wait(NULL);
+			cur_jobs--;
 		}
 
-		cur_jobs = 0;
-		while (queue_len(&queue)) {
-			struct Target *targ;
-			struct timespec targ_mtim;
-			int out_of_date;
-			pid_t pid;
-			char child_status;
-
-			// Block and wait for jobs to terminate if at max
-			while (cur_jobs >= max_jobs) {
-				wait(NULL);
-				cur_jobs--;
+		while (read(pipefds[0], &child_status, 1) != -1)
+			if (child_status) {
+				die("job terminated with status %d", child_status);
+				exit(1);
 			}
 
-			while (read(pipefds[0], &child_status, 1) != -1)
-				if (child_status)
-					exit(1);
+		// For every target depending on us we keep track of the
+		// number of satisfied targets and only build it if all
+		// its targets are satisfied
+		targ = queue_pop(&queue);
+		if (targ->n_sat_dep && *targ->n_sat_dep < targ->deps.len) {
+			queue_push(&queue, targ); // push it back to the back
+			continue;
+		}
 
-			// For every target depending on us we keep track of the
-			// number of satisfied targets and only build it if all
-			// its targets are satisfied
-			targ = queue_pop(&queue);
-			if (targ->n_sat_dep && *targ->n_sat_dep < targ->deps.len) {
-				queue_push(&queue, targ); // push it back to the back
-				continue;
-			}
-
-			// Check if any dependencies are younger
-			if (stat(targ->name, &sb) == -1) { // doesn't exist
-				targ_mtim.tv_sec = 0;
-				targ_mtim.tv_nsec = 0;
-			} else {
+		// Check if any dependencies are younger
+		if (stat(targ->name, &sb) == -1) { // doesn't exist
+			targ_mtim.tv_sec = 0;
+			targ_mtim.tv_nsec = 0;
+		} else {
 #ifdef __APPLE__ // piece of shit
-				targ_mtim = sb.st_mtimespec;
+			targ_mtim = sb.st_mtimespec;
 #else
-				targ_mtim = sb.st_mtim;
+			targ_mtim = sb.st_mtim;
 #endif
+		}
+
+		out_of_date = 0;
+		for (size_t i = 0; i < targ->deps.len; i++) {
+			struct Target *dep;
+			dep = *(struct Target **)
+					  table_find(&graph->targets, targ->deps.data[i]);
+			out_of_date |= stat(dep->name, &sb) == -1;
+			out_of_date |= targ_mtim.tv_sec < sb.st_mtim.tv_sec;
+			out_of_date |=
+				(targ_mtim.tv_sec == sb.st_mtim.tv_sec &&
+			     targ_mtim.tv_nsec < sb.st_mtim.tv_nsec);
+		}
+
+		if ((pid = fork_s())) {
+			cur_jobs++;
+			for (size_t i = 0; i < targ->codeps.len; i++) {
+				struct Target *c;
+				c = targ->codeps.data[i];
+				if (!c->visited)
+					continue;
+				c->visited = 0;
+				queue_push(&queue, c);
+			}
+		} else {
+			int status;
+			if (out_of_date && targ->cmd) {
+				int cmd_status;
+				log(msgt_raw, "%s", targ->cmd);
+				cmd_status = system(targ->cmd);
+				status = WEXITSTATUS(cmd_status);
+				write(pipefds[1], &status, 1);
 			}
 
-			out_of_date = 0;
-			for (size_t i = 0; i < targ->deps.len; i++) {
-				struct Target *dep;
-				dep = *(struct Target **)
-						  table_find(&graph->targets, targ->deps.data[i]);
-				out_of_date |= stat(dep->name, &sb) == -1;
-				out_of_date |= targ_mtim.tv_sec < sb.st_mtim.tv_sec;
-				out_of_date |=
-					(targ_mtim.tv_sec == sb.st_mtim.tv_sec &&
-				     targ_mtim.tv_nsec < sb.st_mtim.tv_nsec);
+			for (size_t i = 0; i < targ->codeps.len; i++) {
+				struct Target *c;
+				c = targ->codeps.data[i];
+				atomic_fetch_add_explicit(
+					c->n_sat_dep,
+					1,
+					memory_order_relaxed
+				); // c->n_sat_dep++;
 			}
 
-			if ((pid = fork_s())) {
-				cur_jobs++;
-				for (size_t i = 0; i < targ->codeps.len; i++) {
-					struct Target *c;
-					c = targ->codeps.data[i];
-					if (!c->visited)
-						continue;
-					c->visited = 0;
-					queue_push(&queue, c);
-				}
-			} else {
-				int status;
-				if (out_of_date && targ->cmd) {
-					int cmd_status;
-					log(msgt_raw, "%s", targ->cmd);
-					cmd_status = system(targ->cmd);
-					status = WEXITSTATUS(cmd_status);
-					write(pipefds[1], &status, 1);
-				}
-
-				for (size_t i = 0; i < targ->codeps.len; i++) {
-					struct Target *c;
-					c = targ->codeps.data[i];
-					atomic_fetch_add_explicit(
-						c->n_sat_dep,
-						1,
-						memory_order_relaxed
-					);
-				}
-
-				_exit(0);
-			}
+			_exit(0);
 		}
 	}
 
-	munmap(shm.dep_cnt, shm.dep_cnt_sz);
 	queue_destroy(&queue);
 	array_destroy(&leaves);
+	free_depcnts(shm);
 }
 
 // }}}
