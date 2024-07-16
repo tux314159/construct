@@ -113,7 +113,7 @@ struct Depgraph {
 // Primitive wrappers, abort on failure {{{
 
 static void *
-malloc_s(size_t n)
+_malloc_s(size_t n)
 {
 	void *p;
 	p = malloc(n);
@@ -123,7 +123,7 @@ malloc_s(size_t n)
 }
 
 static void *
-calloc_s(size_t n, size_t sz)
+_calloc_s(size_t n, size_t sz)
 {
 	void *p;
 	p = calloc(n, sz);
@@ -133,7 +133,7 @@ calloc_s(size_t n, size_t sz)
 }
 
 static void *
-realloc_s(void *p, size_t n)
+_realloc_s(void *p, size_t n)
 {
 	void *np;
 	np = realloc(p, n);
@@ -143,7 +143,7 @@ realloc_s(void *p, size_t n)
 }
 
 static char *
-strdup_s(const char *s)
+_strdup_s(const char *s)
 {
 	char *ns;
 	ns = strdup(s);
@@ -153,7 +153,7 @@ strdup_s(const char *s)
 }
 
 static pid_t
-fork_s(void)
+_fork_s(void)
 {
 	pid_t pid;
 	pid = fork();
@@ -170,9 +170,9 @@ fork_s(void)
  * these are really, really fast. */
 
 void
-queue_init(struct Queue *q, size_t size)
+_queue_init(struct Queue *q, size_t size)
 {
-	q->base = malloc_s(2 * (size + 1) * sizeof(*q->base));
+	q->base = _malloc_s(2 * (size + 1) * sizeof(*q->base));
 	q->in = q->base;
 	q->base2 = q->in + size;
 	q->out = q->base2;
@@ -181,19 +181,19 @@ queue_init(struct Queue *q, size_t size)
 }
 
 void
-queue_destroy(struct Queue *q)
+_queue_destroy(struct Queue *q)
 {
 	free(q->base < q->base2 ? q->base : q->base2);
 }
 
 void
-queue_push(struct Queue *q, void *val)
+_queue_push(struct Queue *q, void *val)
 {
 	*(q->inp++) = val;
 }
 
 void *
-queue_pop(struct Queue *q)
+_queue_pop(struct Queue *q)
 {
 	void **t;
 	if (q->outp == q->out) {
@@ -209,13 +209,13 @@ queue_pop(struct Queue *q)
 }
 
 size_t
-queue_len(struct Queue *q)
+_queue_len(struct Queue *q)
 {
 	return (size_t)((q->inp - q->in) + (q->out - q->outp));
 }
 
 void
-queue_clear(struct Queue *q)
+_queue_clear(struct Queue *q)
 {
 	q->inp = q->in;
 	q->out = q->outp;
@@ -226,29 +226,29 @@ queue_clear(struct Queue *q)
 // Dynamic arrays {{{
 
 void
-array_init(struct Array *arr)
+_array_init(struct Array *arr)
 {
 	arr->len = 0;
 	arr->_cap = 1;
-	arr->data = malloc_s(sizeof(*arr->data));
+	arr->data = _malloc_s(sizeof(*arr->data));
 }
 
 void
-array_push(struct Array *arr, void *item)
+_array_push(struct Array *arr, void *item)
 {
 	arr->_cap *= 2;
-	arr->data = realloc_s(arr->data, arr->_cap * sizeof(*arr->data));
+	arr->data = _realloc_s(arr->data, arr->_cap * sizeof(*arr->data));
 	arr->data[arr->len++] = item;
 }
 
 void *
-array_pop(struct Array *arr)
+_array_pop(struct Array *arr)
 {
 	return arr->data[--arr->len];
 }
 
 void
-array_destroy(struct Array *arr)
+_array_destroy(struct Array *arr)
 {
 	free(arr->data);
 }
@@ -260,7 +260,7 @@ array_destroy(struct Array *arr)
 // Linear probing, not very fast, and a random hash algorithm
 
 static uint32_t
-djb2(const unsigned char *str)
+_djb2(const unsigned char *str)
 {
 	uint32_t hash = 5381;
 	unsigned char c;
@@ -271,23 +271,17 @@ djb2(const unsigned char *str)
 	return hash;
 }
 
-int
-table_init(struct Table *tbl)
+void
+_table_init(struct Table *tbl)
 {
 	tbl->n_slots = TABLE_INIT_SLOTS;
 	tbl->n_filled = 0;
 	tbl->n_tomb = 0;
-	tbl->slots = calloc(2 * TABLE_INIT_SLOTS, sizeof(*tbl->slots));
-	if (!tbl->slots)
-		goto cleanup_fail;
-	return 0;
-
-cleanup_fail:
-	return -1;
+	tbl->slots = _calloc_s(2 * TABLE_INIT_SLOTS, sizeof(*tbl->slots));
 }
 
 void
-table_destroy(struct Table *tbl)
+_table_destroy(struct Table *tbl)
 {
 	for (size_t i = 0; i < tbl->n_slots; i++) {
 		if (!tbl->slots[i].key || tbl->slots[i].key == (char *)&tbl->n_tomb)
@@ -296,7 +290,7 @@ table_destroy(struct Table *tbl)
 	}
 }
 
-static int
+void
 _table_resize(struct Table *tbl)
 {
 	// Just double the capacity of the table
@@ -306,16 +300,14 @@ _table_resize(struct Table *tbl)
 	struct TableEntry *new_slots;
 
 	tbl->n_slots <<= 1;
-	new_slots = calloc(2 * tbl->n_slots, sizeof(*new_slots));
-	if (!new_slots)
-		goto cleanup_fail;
+	new_slots = _calloc_s(2 * tbl->n_slots, sizeof(*new_slots));
 
 	for (size_t i = 0; i < old_cap; i++) {
 		if (!tbl->slots[i].key || tbl->slots[i].key == (char *)&tbl->n_tomb)
 
 			continue;
 		// Find new slot
-		slot = djb2((unsigned char *)tbl->slots[i].key) &
+		slot = _djb2((unsigned char *)tbl->slots[i].key) &
 			(tbl->n_slots - 1); /* hash % n */
 		while (new_slots[slot].key)
 			slot = (slot + 1) & (tbl->n_slots - 1);
@@ -325,13 +317,9 @@ _table_resize(struct Table *tbl)
 	free(tbl->slots);
 	tbl->slots = new_slots;
 	tbl->n_tomb = 0;
-
-	return 0;
-cleanup_fail:
-	return -1;
 }
 
-static void
+void
 _table_exhume(struct Table *tbl)
 {
 	struct TableEntry *tmp;
@@ -343,7 +331,7 @@ _table_exhume(struct Table *tbl)
 		if (!tbl->slots[i].key || tbl->slots[i].key == (char *)&tbl->n_tomb)
 			continue;
 		/* Find new slot */
-		slot = djb2((unsigned char *)tbl->slots[i].key) &
+		slot = _djb2((unsigned char *)tbl->slots[i].key) &
 			(tbl->n_slots - 1); /* hash % n */
 		while (tbl->more[slot].key)
 			slot = (slot + 1) & (tbl->n_slots - 1);
@@ -358,11 +346,11 @@ _table_exhume(struct Table *tbl)
 }
 
 static inline struct TableEntry *
-_table_find(struct Table *tbl, const char *key)
+_table_find_entry(struct Table *tbl, const char *key)
 {
 	uint32_t slot;
 
-	slot = djb2((const unsigned char *)key) & (tbl->n_slots - 1);
+	slot = _djb2((const unsigned char *)key) & (tbl->n_slots - 1);
 	while (tbl->slots[slot].key &&
 	       (tbl->slots[slot].key == (char *)&tbl->n_tomb ||
 	        strcmp(tbl->slots[slot].key, key))) {
@@ -374,25 +362,25 @@ _table_find(struct Table *tbl, const char *key)
 		return NULL;
 }
 
-int
-table_insert(struct Table *tbl, const char *key, void *val)
+void *
+_table_insert(struct Table *tbl, const char *key, void *val)
 {
 	uint32_t slot;
 	struct TableEntry *ent;
 
 	/* If key already exists then update, else insert */
-	ent = _table_find(tbl, key);
+	ent = _table_find_entry(tbl, key);
 	if (ent) {
 		ent->val = val;
+		return ent->val;
 	} else {
 		if (100 * tbl->n_filled / tbl->n_slots > TABLE_RESIZE_RATIO)
-			if (_table_resize(tbl))
-				goto cleanup_fail;
+			_table_resize(tbl);
 		if (100 * (tbl->n_filled + tbl->n_tomb) / tbl->n_slots >
 		    TABLE_RESIZE_RATIO)
 			_table_exhume(tbl);
 
-		slot = djb2((const unsigned char *)key) &
+		slot = _djb2((const unsigned char *)key) &
 			(tbl->n_slots - 1); /* hash % n */
 		while (tbl->slots[slot].key &&
 		       tbl->slots[slot].key != (char *)&tbl->n_tomb)
@@ -400,29 +388,22 @@ table_insert(struct Table *tbl, const char *key, void *val)
 
 		if (tbl->slots[slot].key == (char *)&tbl->n_tomb)
 			tbl->n_tomb--;
-		tbl->slots[slot].key = malloc_s(strlen(key) + 1);
+		tbl->slots[slot].key = _malloc_s(strlen(key) + 1);
 		tbl->slots[slot].val = val;
-		if (!tbl->slots[slot].key) {
-			free(tbl->slots[slot].key);
-			goto cleanup_fail;
-		}
 		strcpy(tbl->slots[slot].key, key);
 
 		tbl->n_filled++;
 	}
 
-	return 0;
-
-cleanup_fail:
-	return -1;
+	return tbl->slots[slot].val;
 }
 
 int
-table_delete(struct Table *tbl, const char *key)
+_table_delete(struct Table *tbl, const char *key)
 {
 	struct TableEntry *addr;
 
-	addr = _table_find(tbl, key);
+	addr = _table_find_entry(tbl, key);
 	if (!addr)
 		return -1;
 	free(addr->key);
@@ -434,11 +415,11 @@ table_delete(struct Table *tbl, const char *key)
 }
 
 void **
-table_find(struct Table *tbl, const char *key)
+_table_find(struct Table *tbl, const char *key)
 {
 	struct TableEntry *addr;
 
-	addr = _table_find(tbl, key);
+	addr = _table_find_entry(tbl, key);
 	if (!addr)
 		return NULL;
 	else
@@ -450,7 +431,7 @@ table_find(struct Table *tbl, const char *key)
 // String wrangling {{{
 
 char *
-format_cmd(const char *s, const char *name, struct Array *deps)
+_format_cmd(const char *s, const char *name, struct Array *deps)
 {
 	char *res_buf;
 	size_t res_len;
@@ -503,36 +484,38 @@ format_cmd(const char *s, const char *name, struct Array *deps)
 
 // Build system graph {{{
 
+// Core functionality {{{
+
 void
-graph_init(struct Depgraph *graph)
+_graph_init(struct Depgraph *graph)
 {
 	graph->n_targets = 0;
-	table_init(&graph->targets);
+	_table_init(&graph->targets);
 }
 
 // WARNING: must end arglist with null!
 struct Target *
-make_target(const char *name, const char *cmd, ...)
+_make_target(const char *name, const char *cmd, ...)
 {
 	va_list args;
 	char *arg;
 	struct Target *target;
 
-	target = malloc_s(sizeof(*target));
-	target->name = strdup_s(name);
-	array_init(&target->deps);
-	array_init(&target->codeps);
+	target = _malloc_s(sizeof(*target));
+	target->name = _strdup_s(name);
+	_array_init(&target->deps);
+	_array_init(&target->codeps);
 
 	target->n_sat_dep = NULL;
 	target->visited = 0;
 
 	va_start(args, cmd);
 	while ((arg = va_arg(args, char *))) {
-		array_push(&target->deps, arg);
+		_array_push(&target->deps, arg);
 	}
 
 	if (cmd) {
-		target->cmd = format_cmd(cmd, name, &target->deps);
+		target->cmd = _format_cmd(cmd, name, &target->deps);
 	} else {
 		target->cmd = NULL;
 	}
@@ -540,11 +523,13 @@ make_target(const char *name, const char *cmd, ...)
 	return target;
 }
 
-void
-add_target(struct Depgraph *graph, struct Target *target)
+struct Target *
+_add_target(struct Depgraph *graph, struct Target *target)
 {
-	table_insert(&graph->targets, target->name, target);
+	struct Target *targ_loc;
+	targ_loc = _table_insert(&graph->targets, target->name, target);
 	graph->n_targets++;
+	return targ_loc;
 }
 
 struct DepCnts {
@@ -554,7 +539,7 @@ struct DepCnts {
 
 // Allocate shared memory needed to keep track of built deps
 struct DepCnts
-alloc_depcnts(size_t n)
+_alloc_depcnts(size_t n)
 {
 	struct DepCnts shm;
 	int tmpfile;
@@ -590,14 +575,19 @@ alloc_depcnts(size_t n)
 	return shm;
 }
 
-void free_depcnts(struct DepCnts shm)
+void
+_free_depcnts(struct DepCnts shm)
 {
 	munmap(shm.dep_cnt, shm.dep_cnt_sz);
 }
 
 // BFS from the final target, prune, and find leaves
 struct Array
-prepare_graph(struct Depgraph *graph, const char *targ_name, struct DepCnts shm)
+_prepare_graph(
+	struct Depgraph *graph,
+	const char *targ_name,
+	struct DepCnts shm
+)
 {
 	struct Target **final_targ;
 	size_t shm_idx;
@@ -605,42 +595,42 @@ prepare_graph(struct Depgraph *graph, const char *targ_name, struct DepCnts shm)
 	struct Array leaves;
 	struct stat sb;
 
-	queue_init(&queue, graph->n_targets);
-	array_init(&leaves);
+	_queue_init(&queue, graph->n_targets);
+	_array_init(&leaves);
 
-	final_targ = (struct Target **)table_find(&graph->targets, targ_name);
+	final_targ = (struct Target **)_table_find(&graph->targets, targ_name);
 	if (!final_targ)
 		die("bad target: %s", targ_name);
-	queue_push(&queue, *final_targ);
+	_queue_push(&queue, *final_targ);
 	(*final_targ)->visited = 1;
 	shm_idx = 0;
 
-	while (queue_len(&queue)) {
+	while (_queue_len(&queue)) {
 		struct Target *targ, *new;
 
-		targ = queue_pop(&queue);
+		targ = _queue_pop(&queue);
 		if (targ->deps.len == 0)
-			array_push(&leaves, targ); // collate leaves
+			_array_push(&leaves, targ); // collate leaves
 		else
 			targ->n_sat_dep = shm.dep_cnt + (shm_idx++);
 
 		for (size_t i = 0; i < targ->deps.len; i++) {
 			struct Target **c;
 			c = (struct Target **)
-				table_find(&graph->targets, targ->deps.data[i]);
+				_table_find(&graph->targets, targ->deps.data[i]);
 			if (!c) {
 				// If sought-after dependency doesn't exist, it may
 				// be a source file, try to find and add it
 				if (stat(targ->deps.data[i], &sb) == -1)
 					die("bad target: %s", (char *)targ->deps.data[i]);
-				new = make_target(targ->deps.data[i], NULL, NULL);
-				add_target(graph, new);
+				new = _make_target(targ->deps.data[i], NULL, NULL);
+				_add_target(graph, new);
 				c = &new;
 			}
-			array_push(&(*c)->codeps, targ); // fill up codeps
+			_array_push(&(*c)->codeps, targ); // fill up codeps
 
 			if (!(*c)->visited) {
-				queue_push(&queue, *c);
+				_queue_push(&queue, *c);
 				(*c)->visited = 1;
 			}
 		}
@@ -650,7 +640,7 @@ prepare_graph(struct Depgraph *graph, const char *targ_name, struct DepCnts shm)
 }
 
 void
-build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
+_build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 {
 	struct DepCnts shm;
 	struct Array leaves;
@@ -659,11 +649,11 @@ build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 	int pipefds[2];
 	int cur_jobs;
 
-	shm = alloc_depcnts(graph->n_targets);
-	leaves = prepare_graph(graph, targ_name, shm);
+	shm = _alloc_depcnts(graph->n_targets);
+	leaves = _prepare_graph(graph, targ_name, shm);
 
 	// Execute build plan
-	queue_init(&queue, graph->n_targets);
+	_queue_init(&queue, graph->n_targets);
 
 	// We use a pipe here to communicate exit status, because we want
 	// to terminate immediately after an error; we are only waiting
@@ -675,12 +665,12 @@ build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 	// Multisource BFS from each source
 	// NOTE: visited is flipped
 	for (size_t i = 0; i < leaves.len; i++) {
-		queue_push(&queue, leaves.data[i]); // start from each leaf
+		_queue_push(&queue, leaves.data[i]); // start from each leaf
 		((struct Target *)(leaves.data[i]))->visited = 0;
 	}
 
 	cur_jobs = 0;
-	while (queue_len(&queue)) {
+	while (_queue_len(&queue)) {
 		struct Target *targ;
 		struct timespec targ_mtim;
 		int out_of_date;
@@ -702,9 +692,9 @@ build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 		// For every target depending on us we keep track of the
 		// number of satisfied targets and only build it if all
 		// its targets are satisfied
-		targ = queue_pop(&queue);
+		targ = _queue_pop(&queue);
 		if (targ->n_sat_dep && *targ->n_sat_dep < targ->deps.len) {
-			queue_push(&queue, targ); // push it back to the back
+			_queue_push(&queue, targ); // push it back to the back
 			continue;
 		}
 
@@ -724,7 +714,7 @@ build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 		for (size_t i = 0; i < targ->deps.len; i++) {
 			struct Target *dep;
 			dep = *(struct Target **)
-					  table_find(&graph->targets, targ->deps.data[i]);
+					  _table_find(&graph->targets, targ->deps.data[i]);
 			out_of_date |= stat(dep->name, &sb) == -1;
 			out_of_date |= targ_mtim.tv_sec < sb.st_mtim.tv_sec;
 			out_of_date |=
@@ -732,7 +722,7 @@ build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 			     targ_mtim.tv_nsec < sb.st_mtim.tv_nsec);
 		}
 
-		if ((pid = fork_s())) {
+		if ((pid = _fork_s())) {
 			cur_jobs++;
 			for (size_t i = 0; i < targ->codeps.len; i++) {
 				struct Target *c;
@@ -740,7 +730,7 @@ build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 				if (!c->visited)
 					continue;
 				c->visited = 0;
-				queue_push(&queue, c);
+				_queue_push(&queue, c);
 			}
 		} else {
 			int status;
@@ -766,34 +756,51 @@ build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 		}
 	}
 
-	queue_destroy(&queue);
-	array_destroy(&leaves);
-	free_depcnts(shm);
+	_queue_destroy(&queue);
+	_array_destroy(&leaves);
+	_free_depcnts(shm);
 }
+
+// }}}
+
+// Extra graph manipulation {{{
+
+void
+_add_dep(struct Depgraph *graph, const char *par_name, struct Target *dep)
+{
+	struct Target **par;
+	par = (struct Target **)_table_find(&graph->targets, par_name);
+	if (!par)
+		die("bad target: %s", par_name);
+	_array_push(&(*par)->deps, dep->name);
+}
+
+// }}}
 
 // }}}
 
 // UI {{{
 // }}}
 
-// "DSL" {{{
+// DSL (user-facing functions/macros) {{{
 
-#define construction_site                 \
-	int main(int argc, char **argv)       \
-	{                                     \
-		struct Depgraph _construct_graph; \
-		graph_init(&_construct_graph);    \
-		(void)argc;                       \
-		(void)argv; // later
+#define construction_site(graph)              \
+	struct Depgraph graph, *_construct_graph; \
+	_construct_graph = &graph;                \
+	_graph_init(_construct_graph);            \
+	(void)argc;                               \
+	(void)argv; // later
 
-#define construction_done }
-
-#define construct(target, njobs) build_graph(&_construct_graph, target, njobs)
+#define construct(target, njobs) _build_graph(_construct_graph, target, njobs)
 
 #define needs(...) __VA_ARGS__,
 #define nodeps
 #define target(name, deps, cmd) \
-	add_target(&_construct_graph, make_target(name, cmd, deps NULL))
+	_add_target(_construct_graph, _make_target(name, cmd, deps NULL))
+
+// "Re-export"
+#define add_dep(parent, dep) \
+	_add_dep(_construct_graph, parent, dep)
 
 // }}}
 
