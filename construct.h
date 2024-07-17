@@ -752,6 +752,9 @@ _graph_build(struct Depgraph *graph, const char *targ_name, int max_jobs)
 		}
 	}
 
+	for (int i = 0; i < cur_jobs; i++)
+		wait(NULL); /* wait for all children to terminate */
+
 	_queue_destroy(&queue);
 	_array_destroy(&leaves);
 	_free_depcnts(shm);
