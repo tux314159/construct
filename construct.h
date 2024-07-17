@@ -62,7 +62,7 @@ static const char *_msgtstr[msgt_end] =
 	do {                                 \
 		log(msgt_err, msg, __VA_ARGS__); \
 		exit(1);                         \
-	} while (0);
+	} while (0)
 
 /* Primitive wrappers, abort on failure {{{1 */
 
@@ -112,7 +112,7 @@ _fork_s(void)
 	pid_t pid;
 	pid = fork();
 	if (pid == -1)
-		abort();
+		die("error creating child process", 0);
 	return pid;
 }
 
@@ -575,7 +575,7 @@ _alloc_depcnts(size_t n)
 
 	tmpfile = mkstemp(tmpfile_name);
 	if (tmpfile == -1)
-		abort();
+		die("error creating temporary file %s", tmpfile_name);
 
 	shm.dep_cnt = mmap(
 		NULL,
@@ -589,11 +589,11 @@ _alloc_depcnts(size_t n)
 	unlink(tmpfile_name);
 
 	if (ftruncate(tmpfile, (off_t)shm.dep_cnt_sz) == -1)
-		abort();
+		die("error allocating space in temporary file", 0);
 	close(tmpfile);
 
 	if (!shm.dep_cnt)
-		abort();
+		abort(); /* sounds like oom */
 
 	for (atomic_size_t *c = shm.dep_cnt; c < shm.dep_cnt + n; c++)
 		atomic_init(c, 0);
@@ -684,7 +684,7 @@ _graph_build(struct Depgraph *graph, const char *targ_name, int max_jobs)
 	// to terminate immediately after an error; we are only waiting
 	// if we are at max_jobs
 	if (pipe(pipefds) == -1)
-		abort();
+		die("error creating pipe", 0);
 	fcntl(pipefds[0], F_SETFL, fcntl(pipefds[0], F_GETFL, 0) | O_NONBLOCK);
 
 	// Multisource BFS from each source
