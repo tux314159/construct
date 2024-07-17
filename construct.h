@@ -19,9 +19,9 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 
-// Pretty-printing/logging {{{
+/* Pretty-printing/logging {{{1 */
 
-// ANSI escapes
+/* ANSI escapes */
 #define T_DIM "\x1b[2m"
 #define T_BOLD "\x1b[1m"
 #define T_ITAL "\x1b[3m"
@@ -40,7 +40,7 @@ enum MsgT {
 	msgt_end,
 };
 static const char *_msgtstr[msgt_end] =
-	{T_BLUE, T_YELLOW, T_RED}; // not a macro so we don't forget to update it
+	{T_BLUE, T_YELLOW, T_RED}; /* not a macro so we don't forget to update it */
 
 #define log(type, msg, ...)                              \
 	do {                                                 \
@@ -64,53 +64,7 @@ static const char *_msgtstr[msgt_end] =
 		exit(1);                         \
 	} while (0);
 
-// }}}
-
-// Data structures {{{
-
-struct Queue {
-	void **in, **out, **inp, **outp, **base, **base2;
-};
-
-struct Array {
-	size_t len;
-	size_t _cap;
-	void **data;
-};
-
-#define TABLE_INIT_SLOTS 4
-#define TABLE_RESIZE_RATIO 70
-
-struct TableEntry {
-	char *key;
-	void *val;
-};
-
-struct Table {
-	size_t n_slots; /* 2^k */
-	size_t n_filled;
-	size_t n_tomb; /* address of this field is tombstone */
-	struct TableEntry *slots;
-	struct TableEntry *more; /* unused half to avoid expensive copy */
-};
-
-struct Target {
-	char *name;
-	char *cmd;
-	struct Array deps;
-	struct Array codeps; // NOTE: array of struct Target *
-	atomic_size_t *n_sat_dep;
-	char visited;
-};
-
-struct Depgraph {
-	size_t n_targets;
-	struct Table targets;
-};
-
-// }}}
-
-// Primitive wrappers, abort on failure {{{
+/* Primitive wrappers, abort on failure {{{1 */
 
 static void *
 _malloc_s(size_t n)
@@ -162,12 +116,14 @@ _fork_s(void)
 	return pid;
 }
 
-// }}}
-
-// Queues {{{
+/* Queues {{{1 */
 
 /* See https://github.com/tux314159/queuebench;
  * these are really, really fast. */
+
+struct Queue {
+	void **in, **out, **inp, **outp, **base, **base2;
+};
 
 void
 _queue_init(struct Queue *q, size_t size)
@@ -221,9 +177,13 @@ _queue_clear(struct Queue *q)
 	q->out = q->outp;
 }
 
-// }}}
+/* Dynamic arrays {{{1 */
 
-// Dynamic arrays {{{
+struct Array {
+	size_t len;
+	size_t _cap;
+	void **data;
+};
 
 void
 _array_init(struct Array *arr)
@@ -253,9 +213,23 @@ _array_destroy(struct Array *arr)
 	free(arr->data);
 }
 
-// }}}
+/* Hashtables {{{1 */
 
-// Hashtables {{{
+#define TABLE_INIT_SLOTS 4
+#define TABLE_RESIZE_RATIO 70
+
+struct TableEntry {
+	char *key;
+	void *val;
+};
+
+struct Table {
+	size_t n_slots; /* 2^k */
+	size_t n_filled;
+	size_t n_tomb; /* address of this field is tombstone */
+	struct TableEntry *slots;
+	struct TableEntry *more; /* unused half to avoid expensive copy */
+};
 
 // Linear probing, not very fast, and a random hash algorithm
 
@@ -426,9 +400,7 @@ _table_find(struct Table *tbl, const char *key)
 		return &addr->val;
 }
 
-// }}}
-
-// String wrangling {{{
+/* String wrangling {{{1 */
 
 char *
 _format_cmd(const char *s, const char *name, struct Array *deps)
@@ -480,22 +452,22 @@ _format_cmd(const char *s, const char *name, struct Array *deps)
 	return res_buf;
 }
 
-// }}}
+/* Build system {{{1 */
 
-// Build system graph {{{
+/* Targets {{{2 */
 
-// Core functionality {{{
-
-void
-_graph_init(struct Depgraph *graph)
-{
-	graph->n_targets = 0;
-	_table_init(&graph->targets);
-}
+struct Target {
+	char *name;
+	char *cmd;
+	struct Array deps;
+	struct Array codeps; // NOTE: array of struct Target *
+	atomic_size_t *n_sat_dep;
+	char visited;
+};
 
 // WARNING: must end arglist with null!
 struct Target *
-_make_target(const char *name, const char *cmd, ...)
+_target_make(const char *name, const char *cmd, ...)
 {
 	va_list args;
 	char *arg;
@@ -523,8 +495,62 @@ _make_target(const char *name, const char *cmd, ...)
 	return target;
 }
 
+int
+_target_check_ood(struct Target *targ)
+{
+	int out_of_date;
+	struct stat sb;
+	struct timespec targ_mtim;
+
+	// Check if any dependencies are younger
+	if (stat(targ->name, &sb) == -1) { // doesn't exist
+		targ_mtim.tv_sec = 0;
+		targ_mtim.tv_nsec = 0;
+	} else {
+#ifdef __APPLE__ // piece of shit
+		targ_mtim = sb.st_mtimespec;
+#else
+		targ_mtim = sb.st_mtim;
+#endif
+	}
+
+	out_of_date = 0;
+	for (size_t i = 0; i < targ->deps.len; i++) {
+		out_of_date |= stat(targ->deps.data[i], &sb) == -1;
+		out_of_date |= targ_mtim.tv_sec < sb.st_mtim.tv_sec;
+		out_of_date |=
+			(targ_mtim.tv_sec == sb.st_mtim.tv_sec &&
+		     targ_mtim.tv_nsec < sb.st_mtim.tv_nsec);
+	}
+
+	return out_of_date;
+}
+
+int
+_target_run(struct Target *targ)
+{
+	int status;
+	log(msgt_raw, "%s", targ->cmd);
+	status = system(targ->cmd);
+	return WEXITSTATUS(status);
+}
+
+/* Build graph {{{2 */
+
+struct Depgraph {
+	size_t n_targets;
+	struct Table targets;
+};
+void
+
+_graph_init(struct Depgraph *graph)
+{
+	graph->n_targets = 0;
+	_table_init(&graph->targets);
+}
+
 struct Target *
-_add_target(struct Depgraph *graph, struct Target *target)
+_graph_add_target(struct Depgraph *graph, struct Target *target)
 {
 	struct Target *targ_loc;
 	targ_loc = _table_insert(&graph->targets, target->name, target);
@@ -583,7 +609,7 @@ _free_depcnts(struct DepCnts shm)
 
 // BFS from the final target, prune, and find leaves
 struct Array
-_prepare_graph(
+_graph_prepare(
 	struct Depgraph *graph,
 	const char *targ_name,
 	struct DepCnts shm
@@ -623,8 +649,8 @@ _prepare_graph(
 				// be a source file, try to find and add it
 				if (stat(targ->deps.data[i], &sb) == -1)
 					die("bad target: %s", (char *)targ->deps.data[i]);
-				new = _make_target(targ->deps.data[i], NULL, NULL);
-				_add_target(graph, new);
+				new = _target_make(targ->deps.data[i], NULL, NULL);
+				_graph_add_target(graph, new);
 				c = &new;
 			}
 			_array_push(&(*c)->codeps, targ); // fill up codeps
@@ -640,17 +666,16 @@ _prepare_graph(
 }
 
 void
-_build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
+_graph_build(struct Depgraph *graph, const char *targ_name, int max_jobs)
 {
 	struct DepCnts shm;
 	struct Array leaves;
 	struct Queue queue;
-	struct stat sb;
 	int pipefds[2];
 	int cur_jobs;
 
 	shm = _alloc_depcnts(graph->n_targets);
-	leaves = _prepare_graph(graph, targ_name, shm);
+	leaves = _graph_prepare(graph, targ_name, shm);
 
 	// Execute build plan
 	_queue_init(&queue, graph->n_targets);
@@ -672,8 +697,6 @@ _build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 	cur_jobs = 0;
 	while (_queue_len(&queue)) {
 		struct Target *targ;
-		struct timespec targ_mtim;
-		int out_of_date;
 		pid_t pid;
 		char child_status;
 
@@ -698,30 +721,6 @@ _build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 			continue;
 		}
 
-		// Check if any dependencies are younger
-		if (stat(targ->name, &sb) == -1) { // doesn't exist
-			targ_mtim.tv_sec = 0;
-			targ_mtim.tv_nsec = 0;
-		} else {
-#ifdef __APPLE__ // piece of shit
-			targ_mtim = sb.st_mtimespec;
-#else
-			targ_mtim = sb.st_mtim;
-#endif
-		}
-
-		out_of_date = 0;
-		for (size_t i = 0; i < targ->deps.len; i++) {
-			struct Target *dep;
-			dep = *(struct Target **)
-					  _table_find(&graph->targets, targ->deps.data[i]);
-			out_of_date |= stat(dep->name, &sb) == -1;
-			out_of_date |= targ_mtim.tv_sec < sb.st_mtim.tv_sec;
-			out_of_date |=
-				(targ_mtim.tv_sec == sb.st_mtim.tv_sec &&
-			     targ_mtim.tv_nsec < sb.st_mtim.tv_nsec);
-		}
-
 		if ((pid = _fork_s())) {
 			cur_jobs++;
 			for (size_t i = 0; i < targ->codeps.len; i++) {
@@ -733,12 +732,9 @@ _build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 				_queue_push(&queue, c);
 			}
 		} else {
-			int status;
-			if (out_of_date && targ->cmd) {
-				int cmd_status;
-				log(msgt_raw, "%s", targ->cmd);
-				cmd_status = system(targ->cmd);
-				status = WEXITSTATUS(cmd_status);
+			if (_target_check_ood(targ) && targ->cmd) {
+				int status;
+				status = _target_run(targ);
 				write(pipefds[1], &status, 1);
 			}
 
@@ -761,12 +757,8 @@ _build_graph(struct Depgraph *graph, const char *targ_name, int max_jobs)
 	_free_depcnts(shm);
 }
 
-// }}}
-
-// Extra graph manipulation {{{
-
 void
-_add_dep(struct Depgraph *graph, const char *par_name, struct Target *dep)
+_graph_add_dep(struct Depgraph *graph, const char *par_name, struct Target *dep)
 {
 	struct Target **par;
 	par = (struct Target **)_table_find(&graph->targets, par_name);
@@ -775,14 +767,9 @@ _add_dep(struct Depgraph *graph, const char *par_name, struct Target *dep)
 	_array_push(&(*par)->deps, dep->name);
 }
 
-// }}}
+/* UI {{{1 */
 
-// }}}
-
-// UI {{{
-// }}}
-
-// DSL (user-facing functions/macros) {{{
+/* DSL (user-facing functions/macros) {{{1 */
 
 #define construction_site(graph)              \
 	struct Depgraph graph, *_construct_graph; \
@@ -791,17 +778,14 @@ _add_dep(struct Depgraph *graph, const char *par_name, struct Target *dep)
 	(void)argc;                               \
 	(void)argv; // later
 
-#define construct(target, njobs) _build_graph(_construct_graph, target, njobs)
+#define construct(target, njobs) _graph_build(_construct_graph, target, njobs)
 
 #define needs(...) __VA_ARGS__,
 #define nodeps
 #define target(name, deps, cmd) \
-	_add_target(_construct_graph, _make_target(name, cmd, deps NULL))
+	_graph_add_target(_construct_graph, _target_make(name, cmd, deps NULL))
 
 // "Re-export"
-#define add_dep(parent, dep) \
-	_add_dep(_construct_graph, parent, dep)
-
-// }}}
+#define add_dep(parent, dep) _graph_add_dep(_construct_graph, parent, dep)
 
 #endif
