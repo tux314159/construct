@@ -40,7 +40,8 @@ enum MsgT {
 	msgt_end,
 };
 static const char *_msgtstr[msgt_end] =
-	{T_BLUE, T_YELLOW, T_RED, T_NORM}; /* not a macro so we don't forget to update it */
+	{T_BLUE, T_YELLOW, T_RED, T_NORM
+}; /* not a macro so we don't forget to update it */
 
 #define log(type, msg, ...)                              \
 	do {                                                 \
