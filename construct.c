@@ -14,7 +14,7 @@ main(int argc, char **argv)
 			"cc -c -o $@ $< && sleep 0.1");
 	target("testproj/mymath.o", needs("testproj/mymath.c"),
 			"cc -c -o $@ $< && sleep 0.1");
-	add_dep("testproj/mymath.o", target("mymathx.h", nodeps, ""));
+	add_dep("testproj/mymath.o", target("doesn't exist", nodeps, ""));
 
 	construct("testproj/main", 2);
 }

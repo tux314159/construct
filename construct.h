@@ -558,6 +558,14 @@ _graph_add_target(struct Depgraph *graph, struct Target *target)
 	return targ_loc;
 }
 
+struct Target *
+_graph_get_target(struct Depgraph *graph, const char *targ_name)
+{
+	struct Target **targ;
+	targ = (struct Target **)_table_find(&graph->targets, targ_name);
+	return targ ? *targ : NULL;
+}
+
 struct DepCnts {
 	size_t dep_cnt_sz;
 	atomic_size_t *dep_cnt;
@@ -611,11 +619,10 @@ _free_depcnts(struct DepCnts shm)
 struct Array
 _graph_prepare(
 	struct Depgraph *graph,
-	const char *targ_name,
+	struct Target *final_targ,
 	struct DepCnts shm
 )
 {
-	struct Target **final_targ;
 	size_t shm_idx;
 	struct Queue queue;
 	struct Array leaves;
@@ -624,11 +631,8 @@ _graph_prepare(
 	_queue_init(&queue, graph->n_targets);
 	_array_init(&leaves);
 
-	final_targ = (struct Target **)_table_find(&graph->targets, targ_name);
-	if (!final_targ)
-		die("bad target: %s", targ_name);
-	_queue_push(&queue, *final_targ);
-	(*final_targ)->visited = 1;
+	_queue_push(&queue, final_targ);
+	final_targ->visited = 1;
 	shm_idx = 0;
 
 	while (_queue_len(&queue)) {
@@ -666,7 +670,7 @@ _graph_prepare(
 }
 
 void
-_graph_build(struct Depgraph *graph, const char *targ_name, int max_jobs)
+_graph_build(struct Depgraph *graph, struct Target *final_targ, int max_jobs)
 {
 	struct DepCnts shm;
 	struct Array leaves;
@@ -675,7 +679,7 @@ _graph_build(struct Depgraph *graph, const char *targ_name, int max_jobs)
 	int cur_jobs;
 
 	shm = _alloc_depcnts(graph->n_targets);
-	leaves = _graph_prepare(graph, targ_name, shm);
+	leaves = _graph_prepare(graph, final_targ, shm);
 
 	// Execute build plan
 	_queue_init(&queue, graph->n_targets);
@@ -781,7 +785,12 @@ _graph_add_dep(struct Depgraph *graph, const char *par_name, struct Target *dep)
 	(void)argc;                               \
 	(void)argv; // later
 
-#define construct(target, njobs) _graph_build(_construct_graph, target, njobs)
+#define construct(targ_name, njobs)                     \
+	_graph_build(                                       \
+		_construct_graph,                               \
+		_graph_get_target(_construct_graph, targ_name), \
+		njobs                                           \
+	)
 
 #define needs(...) __VA_ARGS__,
 #define nodeps
