@@ -43,20 +43,23 @@ static const char *_msgtstr[msgt_end] =
 	{T_BLUE, T_YELLOW, T_RED, T_NORM
 }; /* not a macro so we don't forget to update it */
 
-#define log(type, msg, ...)                              \
-	do {                                                 \
-		if (type == msgt_raw) {                          \
-			printf(msg "\n", __VA_ARGS__);               \
-			break;                                       \
-		}                                                \
-		printf(                                          \
-			T_DIM "%s:%d: " T_NORM "%s" msg T_NORM "\n", \
-			__FILE__,                                    \
-			__LINE__,                                    \
-			_msgtstr[type],                              \
-			__VA_ARGS__                                  \
-		);                                               \
-		fflush(stdout);                                  \
+static const char *_dbg_file_global = NULL;
+static int _dbg_line_global = 0;
+
+#define log(type, msg, ...)                                 \
+	do {                                                    \
+		if (type == msgt_raw) {                             \
+			printf(msg "\n", __VA_ARGS__);                  \
+			break;                                          \
+		}                                                   \
+		printf(                                             \
+			T_DIM "%s:%d: " T_NORM "%s" msg T_NORM "\n",    \
+			_dbg_file_global ? _dbg_file_global : __FILE__, \
+			_dbg_line_global ? _dbg_line_global : __LINE__, \
+			_msgtstr[type],                                 \
+			__VA_ARGS__                                     \
+		);                                                  \
+		fflush(stdout);                                     \
 	} while (0)
 
 #define die(msg, ...)                    \
@@ -459,7 +462,7 @@ _format_cmd(const char *s, const char *name, struct Array *deps)
 
 struct Target {
 	char *name;
-	char *cmd;
+	char *raw_cmd;
 	struct Array deps;
 	struct Array codeps; // NOTE: array of struct Target *
 	atomic_size_t *n_sat_dep;
@@ -482,18 +485,20 @@ _target_make(const char *name, const char *cmd, ...)
 	target->n_sat_dep = NULL;
 	target->visited = 0;
 
+	// These must be pushed in order!
 	va_start(args, cmd);
-	while ((arg = va_arg(args, char *))) {
+	while ((arg = va_arg(args, char *)))
 		_array_push(&target->deps, arg);
-	}
 
-	if (cmd) {
-		target->cmd = _format_cmd(cmd, name, &target->deps);
-	} else {
-		target->cmd = NULL;
-	}
+	target->raw_cmd = cmd ? _strdup_s(cmd) : NULL;
 
 	return target;
+}
+
+void
+_target_add_dep(struct Target *parent, const char *dep_name)
+{
+	_array_push(&parent->deps, _strdup_s(dep_name));
 }
 
 int
@@ -531,8 +536,11 @@ int
 _target_run(struct Target *targ)
 {
 	int status;
-	log(msgt_raw, "%s", targ->cmd);
-	status = system(targ->cmd);
+	char *cmd;
+	cmd = _format_cmd(targ->raw_cmd, targ->name, &targ->deps);
+	log(msgt_raw, "%s", cmd);
+	status = system(cmd);
+	free(cmd);
 	return WEXITSTATUS(status);
 }
 
@@ -737,7 +745,7 @@ _graph_build(struct Depgraph *graph, struct Target *final_targ, int max_jobs)
 				_queue_push(&queue, c);
 			}
 		} else {
-			if (_target_check_ood(targ) && targ->cmd) {
+			if (_target_check_ood(targ) && targ->raw_cmd) {
 				int status;
 				status = _target_run(targ);
 				write(pipefds[1], &status, 1);
@@ -765,19 +773,18 @@ _graph_build(struct Depgraph *graph, struct Target *final_targ, int max_jobs)
 	_free_depcnts(shm);
 }
 
-void
-_graph_add_dep(struct Depgraph *graph, const char *par_name, struct Target *dep)
-{
-	struct Target **par;
-	par = (struct Target **)_table_find(&graph->targets, par_name);
-	if (!par)
-		die("bad target: %s", par_name);
-	_array_push(&(*par)->deps, dep->name);
-}
-
 /* UI {{{1 */
 
 /* DSL (user-facing functions/macros) {{{1 */
+
+#define _DSL_DECL_STMT(body)         \
+	do {                             \
+		_dbg_line_global = __LINE__; \
+		_dbg_file_global = __FILE__; \
+		body;                        \
+		_dbg_line_global = 0;        \
+		_dbg_file_global = NULL;     \
+	} while (0)
 
 #define construction_site(graph)              \
 	struct Depgraph graph, *_construct_graph; \
@@ -786,19 +793,24 @@ _graph_add_dep(struct Depgraph *graph, const char *par_name, struct Target *dep)
 	(void)argc;                               \
 	(void)argv; // later
 
-#define construct(targ_name, njobs)                     \
-	_graph_build(                                       \
-		_construct_graph,                               \
-		_graph_get_target(_construct_graph, targ_name), \
-		njobs                                           \
-	)
+#define construct(targ_name, njobs)                                    \
+	_DSL_DECL_STMT(_graph_build(                                       \
+					   _construct_graph,                               \
+					   _graph_get_target(_construct_graph, targ_name), \
+					   njobs                                           \
+	);)
 
 #define needs(...) __VA_ARGS__,
 #define nodeps
-#define target(name, deps, cmd) \
-	_graph_add_target(_construct_graph, _target_make(name, cmd, deps NULL))
+#define target(name, deps, cmd)                           \
+	_DSL_DECL_STMT(_graph_add_target(                     \
+					   _construct_graph,                  \
+					   _target_make(name, cmd, deps NULL) \
+	);)
 
-// "Re-export"
-#define add_dep(parent, dep) _graph_add_dep(_construct_graph, parent, dep)
+#define add_dep(parent, dep)                                               \
+	_DSL_DECL_STMT(                                                        \
+		_target_add_dep(_graph_get_target(_construct_graph, parent), dep); \
+	)
 
 #endif
