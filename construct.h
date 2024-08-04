@@ -745,7 +745,8 @@ _graph_build(struct Depgraph *graph, struct Target *final_targ, int max_jobs)
 				_queue_push(&queue, c);
 			}
 		} else {
-			if (_target_check_ood(targ) && targ->raw_cmd) {
+			if ((targ->deps.len == 0 || _target_check_ood(targ)) &&
+			    targ->raw_cmd) { // phony if it has no deps
 				int status;
 				status = _target_run(targ);
 				write(pipefds[1], &status, 1);
@@ -765,9 +766,21 @@ _graph_build(struct Depgraph *graph, struct Target *final_targ, int max_jobs)
 		}
 	}
 
-	for (int i = 0; i < cur_jobs; i++)
-		wait(NULL); /* wait for all children to terminate */
+	/* Wait for all children to terminate, have to duplicate outside :/ */
+	for (int i = 0; i < cur_jobs; i++) {
+		int child_status;
+		wait(NULL);
+		child_status = 0;
+		while (read(pipefds[0], &child_status, 1) != -1) {
+			if (child_status) {
+				die("job terminated with status %d", child_status);
+				exit(1);
+			}
+		}
+	}
 
+	close(pipefds[0]);
+	close(pipefds[1]);
 	_queue_destroy(&queue);
 	_array_destroy(&leaves);
 	_free_depcnts(shm);
