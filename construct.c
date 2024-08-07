@@ -15,7 +15,7 @@ main(int argc, char **argv)
 	target("testproj/mymath.o", needs("testproj/mymath.c"),
 			"cc -c -o $@ $< && sleep 0.1");
 	//add_dep("testproj/mymath.o", "<nonexistent target> (remove me to build!)");
-	log(msgt_info, "Done adding dependencies :)", 0);
 
-	construct("testproj/main", 3);
+	construct("testproj/main", 2);
+	log(msgt_info, "build complete", 0);
 }

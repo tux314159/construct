@@ -684,7 +684,6 @@ _graph_build(struct Depgraph *graph, struct Target *final_targ, int max_jobs)
 	struct DepCnts shm;
 	struct Array leaves;
 	struct Queue queue;
-	int pipefds[2];
 	int cur_jobs;
 
 	shm = _alloc_depcnts(graph->n_targets);
@@ -692,13 +691,6 @@ _graph_build(struct Depgraph *graph, struct Target *final_targ, int max_jobs)
 
 	// Execute build plan
 	_queue_init(&queue, graph->n_targets);
-
-	// We use a pipe here to communicate exit status, because we want
-	// to terminate immediately after an error; we are only waiting
-	// if we are at max_jobs
-	if (pipe(pipefds) == -1)
-		die("error creating pipe", 0);
-	fcntl(pipefds[0], F_SETFL, fcntl(pipefds[0], F_GETFL, 0) | O_NONBLOCK);
 
 	// Multisource BFS from each source
 	// NOTE: visited is flipped
@@ -711,7 +703,7 @@ _graph_build(struct Depgraph *graph, struct Target *final_targ, int max_jobs)
 	while (_queue_len(&queue)) {
 		struct Target *targ;
 		pid_t pid;
-		char child_status;
+		int child_status;
 
 		// Block and wait for jobs to terminate if at max
 		while (cur_jobs >= max_jobs) {
@@ -719,11 +711,14 @@ _graph_build(struct Depgraph *graph, struct Target *final_targ, int max_jobs)
 			cur_jobs--;
 		}
 
-		while (read(pipefds[0], &child_status, 1) != -1)
-			if (child_status) {
-				die("job terminated with status %d", child_status);
+		while ((pid = waitpid(-1, &child_status, WNOHANG)) > 0) {
+			printf("pid: %d\n", pid);
+			cur_jobs--;
+			if (WEXITSTATUS(child_status)) {
+				die("job terminated with status %d", WEXITSTATUS(child_status));
 				exit(1);
 			}
+		}
 
 		// For every target depending on us we keep track of the
 		// number of satisfied targets and only build it if all
@@ -745,42 +740,23 @@ _graph_build(struct Depgraph *graph, struct Target *final_targ, int max_jobs)
 				_queue_push(&queue, c);
 			}
 		} else {
+			int status;
+
 			if ((targ->deps.len == 0 || _target_check_ood(targ)) &&
 			    targ->raw_cmd) { // phony if it has no deps
-				int status;
 				status = _target_run(targ);
-				write(pipefds[1], &status, 1);
 			}
 
 			for (size_t i = 0; i < targ->codeps.len; i++) {
 				struct Target *c;
 				c = targ->codeps.data[i];
-				atomic_fetch_add_explicit(
-					c->n_sat_dep,
-					1,
-					memory_order_relaxed
-				); // c->n_sat_dep++;
+				(*c->n_sat_dep)++;
 			}
 
-			_exit(0);
+			_exit(status);
 		}
 	}
 
-	/* Wait for all children to terminate, have to duplicate outside :/ */
-	for (int i = 0; i < cur_jobs; i++) {
-		int child_status;
-		wait(NULL);
-		child_status = 0;
-		while (read(pipefds[0], &child_status, 1) != -1) {
-			if (child_status) {
-				die("job terminated with status %d", child_status);
-				exit(1);
-			}
-		}
-	}
-
-	close(pipefds[0]);
-	close(pipefds[1]);
 	_queue_destroy(&queue);
 	_array_destroy(&leaves);
 	_free_depcnts(shm);
