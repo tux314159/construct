@@ -712,7 +712,6 @@ _graph_build(struct Depgraph *graph, struct Target *final_targ, int max_jobs)
 		}
 
 		while ((pid = waitpid(-1, &child_status, WNOHANG)) > 0) {
-			printf("pid: %d\n", pid);
 			cur_jobs--;
 			if (WEXITSTATUS(child_status)) {
 				die("job terminated with status %d", WEXITSTATUS(child_status));

@@ -7,7 +7,7 @@ main(int argc, char **argv)
 
 	target("testproj/main",
 			needs("testproj/main.o", "testproj/hello.o", "testproj/mymath.o"),
-			"cc -o $@ $^ && sleep 0.1");
+			"cc -o $@ $^ && sleep 2");
 	target("testproj/main.o", needs("testproj/main.c", "testproj/hello.h"),
 			"cc -c -o $@ $< && sleep 0.1");
 	target("testproj/hello.o", needs("testproj/hello.c", "testproj/hello.h"),
