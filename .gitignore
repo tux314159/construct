@@ -1,3 +1,4 @@
-construct
+build/construct
+build/*.o
 testproj/*.o
 testproj/main

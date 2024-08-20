@@ -51,4 +51,6 @@ SpaceBeforeAssignmentOperators: true
 SpaceBeforeCaseColon:           false
 UseCRLF:                        false
 UseTab:                         AlignWithSpaces
+
+IndentPPDirectives: AfterHash
 ...

@@ -1,7 +1,6 @@
 -std=c17
 -O2
--Iinclude/
--Isqlite/include
+-Ibuild/
 
 -D_POSIX_C_SOURCE=200809L
 -D_DEFAULT_SOURCE
