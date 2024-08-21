@@ -1,4 +1,5 @@
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdlib.h>
 
 #include "threadpool.h"
@@ -9,6 +10,7 @@ worker_stub(void *_args)
 	struct WorkerArgs *args = _args;
 	void *ret;
 
+	args->self->start = false;
 	args->self->start_mut = malloc(sizeof(*args->self->start_mut));
 	args->self->start_cond = malloc(sizeof(*args->self->start_cond));
 	pthread_mutex_init(args->self->start_mut, NULL);
@@ -22,7 +24,9 @@ worker_stub(void *_args)
 		*args->self->head = args->self;
 		pthread_cond_signal(args->self->idle_list_cond);
 		pthread_mutex_unlock(args->self->idle_list_mut);
-		pthread_cond_wait(args->self->start_cond, args->self->start_mut);
+		while (!args->self->start)
+			pthread_cond_wait(args->self->start_cond, args->self->start_mut);
+		args->self->start = false;
 		pthread_mutex_unlock(args->self->start_mut);
 
 		ret = args->fn(args->args);
@@ -88,6 +92,7 @@ threadpool_execute(struct ThreadPool *pool, void *(*fn)(void *), void *args)
 	worker->args.args = args;
 	if (fn == &worker_term) /* HACK */
 		worker->args.args = worker;
+	worker->start = true;
 	pthread_cond_signal(worker->start_cond);
 	pthread_mutex_unlock(worker->start_mut);
 }

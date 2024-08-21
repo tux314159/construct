@@ -2,6 +2,7 @@
 #define INCLUDE_THREADPOOL_H
 
 #include <pthread.h>
+#include <stdbool.h>
 
 struct WorkerArgs {
 	void *(*fn)(void *);
@@ -16,6 +17,7 @@ struct ThreadPoolWorker {
 	pthread_cond_t *idle_list_cond;
 	pthread_mutex_t *start_mut;
 	pthread_cond_t *start_cond;
+	bool start;
 
 	struct WorkerArgs args;
 
