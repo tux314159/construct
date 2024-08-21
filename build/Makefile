@@ -1,4 +1,4 @@
-OBJS = util.o simpleds.o table.o build.o construct.o
+OBJS = util.o simpleds.o table.o build.o threadpool.o construct.o
 CC = cc
 CFLAGS = -Ibuild -std=c17 -pthread -D_POSIX_C_SOURCE=200809L
 
