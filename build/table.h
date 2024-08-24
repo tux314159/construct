@@ -5,10 +5,10 @@
 #include <stddef.h>
 
 #ifndef TABLE_INIT_SLOTS
-#define TABLE_INIT_SLOTS 4
+#	define TABLE_INIT_SLOTS 4
 #endif
 #ifndef TABLE_RESIZE_RATIO
-#define TABLE_RESIZE_RATIO 70
+#	define TABLE_RESIZE_RATIO 70
 #endif
 
 static_assert(
@@ -19,6 +19,17 @@ static_assert(
 	TABLE_RESIZE_RATIO > 0 && TABLE_RESIZE_RATIO < 100,
 	"TABLE_RESIZE_RATIO must be between 0% and 100%"
 );
+
+/*
+ * We need there to be at least one free slot at all times, else there will be
+ * infinite loops. So, n * ratio% < n - 1 should be satisfied so that the table
+ * will always be resized before it completely fills up.
+ */
+static_assert(
+	TABLE_INIT_SLOTS * TABLE_RESIZE_RATIO < (TABLE_INIT_SLOTS - 1) * 100,
+	"too few initial slots, or ratio is too large"
+);
+
 
 struct TableEntry {
 	char *key;

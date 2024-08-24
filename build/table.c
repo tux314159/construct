@@ -26,6 +26,7 @@ table_init(struct Table *tbl)
 	tbl->n_filled = 0;
 	tbl->n_tomb = 0;
 	tbl->slots = xcalloc(2 * TABLE_INIT_SLOTS, sizeof(*tbl->slots));
+	tbl->more = tbl->slots + tbl->n_slots;
 }
 
 void
@@ -36,6 +37,7 @@ table_destroy(struct Table *tbl)
 			continue;
 		free(tbl->slots[i].key);
 	}
+	free(tbl->slots < tbl->more ? tbl->slots : tbl->more);
 }
 
 void
@@ -62,8 +64,9 @@ table_resize(struct Table *tbl)
 		new_slots[slot].key = tbl->slots[i].key;
 		new_slots[slot].val = tbl->slots[i].val;
 	}
-	free(tbl->slots);
+	free(tbl->slots < tbl->more ? tbl->slots : tbl->more);
 	tbl->slots = new_slots;
+	tbl->more = tbl->slots + tbl->n_slots;
 	tbl->n_tomb = 0;
 }
 
