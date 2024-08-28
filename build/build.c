@@ -1,19 +1,15 @@
-#include <fcntl.h>
-#include <semaphore.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
-#include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 
+#include "build.h"
 #include "simpleds.h"
 #include "table.h"
+#include "threadpool.h"
 #include "util.h"
-#include "build.h"
 
 static char *
 strdup_s(const char *s)
@@ -23,16 +19,6 @@ strdup_s(const char *s)
 	if (!ns)
 		abort();
 	return ns;
-}
-
-static pid_t
-fork_s(void)
-{
-	pid_t pid;
-	pid = fork();
-	if (pid == -1)
-		die("error creating child process", 0);
-	return pid;
 }
 
 char *
@@ -97,7 +83,7 @@ target_make(const char *name, const char *cmd, ...)
 	array_init(&target->deps);
 	array_init(&target->codeps);
 
-	target->n_sat_dep = NULL;
+	atomic_init(&target->n_sat_dep, 0);
 	target->visited = 0;
 
 	// These must be pushed in order!
@@ -183,63 +169,10 @@ graph_get_target(struct Depgraph *graph, const char *targ_name)
 	return targ ? *targ : NULL;
 }
 
-struct DepCnts {
-	size_t dep_cnt_sz;
-	atomic_size_t *dep_cnt;
-};
-
-struct DepCnts
-alloc_depcnts(size_t n)
-{
-	struct DepCnts shm;
-	int tmpfile;
-	char tmpfile_name[] = "/tmp/construct-XXXXXX";
-
-	shm.dep_cnt_sz = n * sizeof(*shm.dep_cnt);
-
-	tmpfile = mkstemp(tmpfile_name);
-	if (tmpfile == -1)
-		die("error creating temporary file %s", tmpfile_name);
-
-	shm.dep_cnt = mmap(
-		NULL,
-		shm.dep_cnt_sz,
-		PROT_READ | PROT_WRITE,
-		MAP_SHARED,
-		tmpfile,
-		0
-	);
-
-	unlink(tmpfile_name);
-
-	if (ftruncate(tmpfile, (off_t)shm.dep_cnt_sz) == -1)
-		die("error allocating space in temporary file", 0);
-	close(tmpfile);
-
-	if (!shm.dep_cnt)
-		abort(); /* sounds like oom */
-
-	for (atomic_size_t *c = shm.dep_cnt; c < shm.dep_cnt + n; c++)
-		atomic_init(c, 0);
-
-	return shm;
-}
-
-static void
-free_depcnts(struct DepCnts shm)
-{
-	munmap(shm.dep_cnt, shm.dep_cnt_sz);
-}
-
 // BFS from the final target, prune, and find leaves
-static struct Array
-graph_prepare(
-	struct Depgraph *graph,
-	struct Target *final_targ,
-	struct DepCnts shm
-)
+static inline struct Array
+graph_prepare(struct Depgraph *graph, struct Target *final_targ)
 {
-	size_t shm_idx;
 	struct Queue queue;
 	struct Array leaves;
 	struct stat sb;
@@ -249,7 +182,6 @@ graph_prepare(
 
 	queue_push(&queue, final_targ);
 	final_targ->visited = 1;
-	shm_idx = 0;
 
 	while (queue_len(&queue)) {
 		struct Target *targ, *new;
@@ -257,8 +189,6 @@ graph_prepare(
 		targ = queue_pop(&queue);
 		if (targ->deps.len == 0)
 			array_push(&leaves, targ); // collate leaves
-		else
-			targ->n_sat_dep = shm.dep_cnt + (shm_idx++);
 
 		for (size_t i = 0; i < targ->deps.len; i++) {
 			struct Target **c;
@@ -285,86 +215,85 @@ graph_prepare(
 	return leaves;
 }
 
-void
-graph_build(struct Depgraph *graph, struct Target *final_targ, int max_jobs)
+struct WorkerArg {
+	struct Target *targ;
+	atomic_bool *error;
+};
+
+static void
+graph_run_target(void *_args)
 {
-	struct DepCnts shm;
+	struct WorkerArg args = *(struct WorkerArg *)_args;
+	struct Target *targ = args.targ;
+	int status;
+
+	if ((targ->deps.len == 0 || target_check_ood(targ)) &&
+	    targ->raw_cmd) { // phony if it has no deps
+		status = target_run(targ);
+		if (status) {
+			log(msgt_err, "job failed with exit status %d\n", status);
+			*args.error = true;
+		}
+	}
+
+	for (size_t i = 0; i < targ->codeps.len; i++) {
+		struct Target *c;
+		c = targ->codeps.data[i];
+		c->n_sat_dep++;
+	}
+}
+
+void
+graph_build(
+	struct Depgraph *graph,
+	struct Target *final_targ,
+	unsigned max_jobs
+)
+{
+	struct ThreadPool threadpool;
 	struct Array leaves;
 	struct Queue queue;
-	int cur_jobs;
+	atomic_bool worker_error = false;
 
-	shm = alloc_depcnts(graph->n_targets);
-	leaves = graph_prepare(graph, final_targ, shm);
-
-	// Execute build plan
-	queue_init(&queue, graph->n_targets);
+	leaves = graph_prepare(graph, final_targ);
+	threadpool_init(&threadpool, max_jobs, sizeof(struct WorkerArg));
 
 	// Multisource BFS from each source
 	// NOTE: visited is flipped
+	queue_init(&queue, graph->n_targets);
 	for (size_t i = 0; i < leaves.len; i++) {
 		queue_push(&queue, leaves.data[i]); // start from each leaf
 		((struct Target *)(leaves.data[i]))->visited = 0;
 	}
 
-	cur_jobs = 0;
-	while (queue_len(&queue)) {
+	while (queue_len(&queue) && !worker_error) {
 		struct Target *targ;
-		pid_t pid;
-		int child_status;
-
-		// Block and wait for jobs to terminate if at max
-		while (cur_jobs >= max_jobs) {
-			wait(NULL);
-			cur_jobs--;
-		}
-
-		while ((pid = waitpid(-1, &child_status, WNOHANG)) > 0) {
-			cur_jobs--;
-			if (WEXITSTATUS(child_status)) {
-				die("job terminated with status %d", WEXITSTATUS(child_status));
-				exit(1);
-			}
-		}
+		struct WorkerArg args;
 
 		// For every target depending on us we keep track of the
 		// number of satisfied targets and only build it if all
 		// its targets are satisfied
 		targ = queue_pop(&queue);
-		if (targ->n_sat_dep && *targ->n_sat_dep < targ->deps.len) {
-			queue_push(&queue, targ); // push it back to the back
+		if (targ->n_sat_dep < targ->deps.len) {
+			queue_push(&queue, targ);
 			continue;
 		}
 
-		if ((pid = fork_s())) {
-			cur_jobs++;
-			for (size_t i = 0; i < targ->codeps.len; i++) {
-				struct Target *c;
-				c = targ->codeps.data[i];
-				if (!c->visited)
-					continue;
-				c->visited = 0;
-				queue_push(&queue, c);
-			}
-		} else {
-			int status;
-
-			if ((targ->deps.len == 0 || target_check_ood(targ)) &&
-			    targ->raw_cmd) { // phony if it has no deps
-				status = target_run(targ);
-			}
-
-			for (size_t i = 0; i < targ->codeps.len; i++) {
-				struct Target *c;
-				c = targ->codeps.data[i];
-				(*c->n_sat_dep)++;
-			}
-
-			_exit(status);
+		args.targ = targ;
+		args.error = &worker_error;
+		threadpool_execute(&threadpool, &graph_run_target, &args);
+		for (size_t i = 0; i < targ->codeps.len; i++) {
+			struct Target *c;
+			c = targ->codeps.data[i];
+			if (!c->visited)
+				continue;
+			c->visited = 0;
+			queue_push(&queue, c);
 		}
+
 	}
 
+	threadpool_destroy(&threadpool);
 	queue_destroy(&queue);
 	array_destroy(&leaves);
-	free_depcnts(shm);
 }
-

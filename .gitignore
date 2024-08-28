@@ -1,4 +1,5 @@
 build/construct
 build/*.o
+threads
 testproj/*.o
 testproj/main
