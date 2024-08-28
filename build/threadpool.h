@@ -1,29 +1,18 @@
 #ifndef INCLUDE_THREADPOOL_H
 #define INCLUDE_THREADPOOL_H
 
+#include <assert.h>
 #include <pthread.h>
 #include <stdbool.h>
 
-struct WorkerArgs {
-	void *(*fn)(void *);
-	void *args;
-	void *ret;
-	struct ThreadPoolWorker *self;
-};
+#define STATIC_ARG_MAX (4 * sizeof(void *))
 
-struct ThreadPoolWorker {
-	pthread_t tid;
-	pthread_mutex_t *idle_list_mut;
-	pthread_cond_t *idle_list_cond;
-	pthread_mutex_t *start_mut;
-	pthread_cond_t *start_cond;
-	bool start;
+static_assert(
+	STATIC_ARG_MAX >= sizeof(void *),
+	"STATIC_ARG_MAX must be large enough to hold a void pointer"
+);
 
-	struct WorkerArgs args;
-
-	struct ThreadPoolWorker **head;
-	struct ThreadPoolWorker *next;
-};
+typedef void (*WorkerCb)(void *);
 
 struct ThreadPool {
 	size_t max_workers;
@@ -33,9 +22,13 @@ struct ThreadPool {
 };
 
 int
-threadpool_init(struct ThreadPool *pool, size_t max_workers);
+threadpool_init(
+	struct ThreadPool *pool,
+	size_t max_workers,
+	size_t arg_size
+);
 void
-threadpool_execute(struct ThreadPool *pool, void *(*fn)(void *), void *args);
+threadpool_execute(struct ThreadPool *pool, WorkerCb fn, void *args);
 void
 threadpool_destroy(struct ThreadPool *pool);
 

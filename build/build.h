@@ -23,7 +23,7 @@ struct Target {
 	char *raw_cmd;
 	struct Array deps;
 	struct Array codeps; // NOTE: array of struct Target *
-	atomic_size_t *n_sat_dep;
+	atomic_size_t n_sat_dep;
 	char visited;
 };
 
@@ -65,7 +65,7 @@ DECLARE(
 DECLARE(
 	void,
 	graph_build,
-	(struct Depgraph * graph, struct Target *final_targ, int max_jobs)
+	(struct Depgraph * graph, struct Target *final_targ, unsigned max_jobs)
 );
 
 #ifndef INCLUDE_BUILD_H

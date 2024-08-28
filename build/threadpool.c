@@ -1,8 +1,32 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "threadpool.h"
+#include "util.h"
+
+struct WorkerArgs {
+	WorkerCb fn;
+	size_t arg_size;
+	void *args;
+	char static_args[STATIC_ARG_MAX];
+	struct ThreadPoolWorker *self;
+};
+
+struct ThreadPoolWorker {
+	pthread_t tid;
+	pthread_mutex_t *idle_list_mut;
+	pthread_cond_t *idle_list_cond;
+	pthread_mutex_t *start_mut;
+	pthread_cond_t *start_cond;
+	bool start;
+
+	struct WorkerArgs args;
+
+	struct ThreadPoolWorker **head;
+	struct ThreadPoolWorker *next;
+};
 
 static void *
 worker_stub(void *_args)
@@ -11,10 +35,14 @@ worker_stub(void *_args)
 	void *ret;
 
 	args->self->start = false;
-	args->self->start_mut = malloc(sizeof(*args->self->start_mut));
-	args->self->start_cond = malloc(sizeof(*args->self->start_cond));
+	args->self->start_mut = xmalloc(sizeof(*args->self->start_mut));
+	args->self->start_cond = xmalloc(sizeof(*args->self->start_cond));
 	pthread_mutex_init(args->self->start_mut, NULL);
 	pthread_cond_init(args->self->start_cond, NULL);
+	if (args->arg_size > STATIC_ARG_MAX)
+		args->args = xmalloc(args->arg_size);
+	else
+		args->args = args->static_args;
 
 	for (;;) {
 		pthread_mutex_lock(args->self->start_mut);
@@ -29,34 +57,40 @@ worker_stub(void *_args)
 		args->self->start = false;
 		pthread_mutex_unlock(args->self->start_mut);
 
-		ret = args->fn(args->args);
-		args->ret = ret;
+		args->fn(args->args);
 	}
 }
 
-static void *
+static void
 worker_term(void *_self)
 {
-	struct ThreadPoolWorker *self = _self;
+	struct ThreadPoolWorker *self = *(struct ThreadPoolWorker **)_self;
 
 	pthread_mutex_destroy(self->start_mut);
 	pthread_cond_destroy(self->start_cond);
 	free(self->start_mut);
 	free(self->start_cond);
+	if (self->args.args != self->args.static_args)
+		free(self->args.args);
 	pthread_exit(0);
 }
 
 int
-threadpool_init(struct ThreadPool *pool, size_t max_workers)
+threadpool_init(
+	struct ThreadPool *pool,
+	size_t max_workers,
+	size_t arg_size
+)
 {
 	pool->max_workers = max_workers;
 	pool->idle_list_mut = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
 	pool->idle_list_cond = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
 
-	pool->workers = malloc(max_workers * sizeof(*pool->idle_workers));
+	pool->workers = xmalloc(max_workers * sizeof(*pool->idle_workers));
 	pool->idle_workers = NULL;
 	for (unsigned i = 0; i < max_workers; i++) {
 		pool->workers[i].args.self = pool->workers + i;
+		pool->workers[i].args.arg_size = arg_size;
 
 		pool->workers[i].head = &pool->idle_workers;
 		pool->workers[i].next = NULL;
@@ -69,14 +103,14 @@ threadpool_init(struct ThreadPool *pool, size_t max_workers)
 				worker_stub,
 				&pool->workers[i].args
 			) != 0)
-			exit(1); /* ERROR */
+			die("failed to spawn thread", 0);
 	}
 
 	return 0;
 }
 
 void
-threadpool_execute(struct ThreadPool *pool, void *(*fn)(void *), void *args)
+threadpool_execute(struct ThreadPool *pool, WorkerCb fn, void *args)
 {
 	struct ThreadPoolWorker *worker;
 
@@ -89,9 +123,10 @@ threadpool_execute(struct ThreadPool *pool, void *(*fn)(void *), void *args)
 
 	pthread_mutex_lock(worker->start_mut);
 	worker->args.fn = fn;
-	worker->args.args = args;
 	if (fn == &worker_term) /* HACK */
-		worker->args.args = worker;
+		memcpy(worker->args.args, &worker, sizeof(worker));
+	else
+		memcpy(worker->args.args, args, worker->args.arg_size);
 	worker->start = true;
 	pthread_cond_signal(worker->start_cond);
 	pthread_mutex_unlock(worker->start_mut);
