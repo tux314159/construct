@@ -11,16 +11,6 @@
 #include "threadpool.h"
 #include "util.h"
 
-static char *
-strdup_s(const char *s)
-{
-	char *ns;
-	ns = strdup(s);
-	if (!ns)
-		abort();
-	return ns;
-}
-
 char *
 format_cmd(const char *s, const char *name, struct Array *deps)
 {
@@ -79,7 +69,7 @@ target_make(const char *name, const char *cmd, ...)
 	struct Target *target;
 
 	target = xmalloc(sizeof(*target));
-	target->name = strdup_s(name);
+	target->name = xstrdup(name);
 	array_init(&target->deps);
 	array_init(&target->codeps);
 
@@ -91,7 +81,7 @@ target_make(const char *name, const char *cmd, ...)
 	while ((arg = va_arg(args, char *)))
 		array_push(&target->deps, arg);
 
-	target->raw_cmd = cmd ? strdup_s(cmd) : NULL;
+	target->raw_cmd = cmd ? xstrdup(cmd) : NULL;
 
 	return target;
 }
@@ -99,7 +89,7 @@ target_make(const char *name, const char *cmd, ...)
 void
 target_add_dep(struct Target *parent, const char *dep_name)
 {
-	array_push(&parent->deps, strdup_s(dep_name));
+	array_push(&parent->deps, xstrdup(dep_name));
 }
 
 int
