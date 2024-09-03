@@ -1,4 +1,5 @@
 #include <stddef.h>
+#include <string.h>
 
 #include "simpleds.h"
 #include "util.h"
@@ -73,4 +74,107 @@ void
 array_destroy(struct Array *arr)
 {
 	free(arr->data);
+}
+
+#define FROM_BUF(s) (s - sizeof(size_t))
+#define TO_BUF(s) (s + sizeof(size_t))
+#define BUF_LEN(s) ((size_t *)FROM_BUF(s))
+
+#pragma clang diagnostic ignored "-Wcast-align" /* clangd stfu */
+
+static Str
+str_alloc_len(size_t len)
+{
+	char *s;
+	s = xcalloc(sizeof(size_t) + len + 1, 1);
+	return TO_BUF(s);
+}
+
+Str
+str_alloc(void)
+{
+	return str_alloc_len(0);
+}
+
+void
+str_free(Str s)
+{
+	free(FROM_BUF(s));
+}
+
+size_t
+str_len(Str s)
+{
+	return *BUF_LEN(s);
+}
+
+size_t
+str_relen(Str s)
+{
+	size_t len;
+	len = strlen(s);
+	*BUF_LEN(s) = len;
+	return len;
+}
+
+Str
+str_growto(Str s, size_t len)
+{
+	char *ns = xrealloc(FROM_BUF(s), sizeof(size_t) + len + 1);
+	return TO_BUF(ns);
+}
+
+Str
+str_concat(Str restrict dest, Str restrict src)
+{
+	Str ns;
+	size_t dest_len; /* might reallocate */
+	dest_len = *BUF_LEN(dest);
+	ns = str_growto(dest, dest_len + *BUF_LEN(src));
+	memcpy(ns + dest_len, src, *BUF_LEN(src) + 1);
+	*BUF_LEN(ns) = dest_len + *BUF_LEN(src);
+	return ns;
+}
+
+Str
+str_concatraw(Str restrict dest, const char *restrict src)
+{
+	Str ns;
+	size_t src_len, dest_len;
+	src_len = strlen(src);
+	dest_len = *BUF_LEN(dest);
+	ns = str_growto(dest, dest_len + src_len);
+	memcpy(ns + dest_len, src, src_len + 1);
+	*BUF_LEN(ns) = dest_len + src_len;
+	return ns;
+}
+
+Str
+str_merge(Str restrict dest, Str restrict src)
+{
+	Str ns;
+	ns = str_concat(dest, src);
+	str_free(src);
+	return ns;
+}
+
+Str
+str_fromraw(Str restrict s, const char *restrict buf)
+{
+	Str ns;
+	ns = s ? s : str_alloc();
+	*BUF_LEN(ns) = strlen(buf);
+	ns = str_growto(ns, *BUF_LEN(ns));
+	memcpy(ns, buf, *BUF_LEN(ns) + 1);
+	return ns;
+}
+
+Str
+str_dupl(Str s)
+{
+	Str ns;
+	ns = str_alloc_len(*BUF_LEN(s));
+	memcpy(ns, s, *BUF_LEN(s) + 1);
+	*BUF_LEN(ns) = *BUF_LEN(s);
+	return ns;
 }
