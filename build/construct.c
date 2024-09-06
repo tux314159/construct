@@ -1,5 +1,8 @@
 #include "dsl.h"
 
+#define CC "cc"
+#define CFLAGS "-Wall -Wextra -pthread"
+
 int
 main(int argc, char **argv)
 {
@@ -7,14 +10,13 @@ main(int argc, char **argv)
 
 	target("testproj/main",
 			needs("testproj/main.o", "testproj/hello.o", "testproj/mymath.o"),
-			"cc -o $@ $^ && sleep 0.1");
+			executes(l CC" "CFLAGS" -o" _ targ() _ alldeps() _));
 	target("testproj/main.o", needs("testproj/main.c", "testproj/hello.h"),
-			"cc -c -o $@ $< && sleep 0.1");
+			executes(l CC" "CFLAGS" -c -o" _ targ() _ firstdep() _));
 	target("testproj/hello.o", needs("testproj/hello.c", "testproj/hello.h"),
-			"cc -c -o $@ $< && sleep 0.1");
+			executes(l CC" "CFLAGS" -c -o" _ targ() _ firstdep() _));
 	target("testproj/mymath.o", needs("testproj/mymath.c"),
-			"cc -c -o $@ $< && sleep 0.1");
-	//add_dep("testproj/mymath.o", "<nonexistent target> (remove me to build!)");
+			executes(l CC" "CFLAGS" -c -o" _ targ() _ firstdep() _));
 
 	construct("testproj/main", 2);
 	log(msgt_info, "build complete", 0);

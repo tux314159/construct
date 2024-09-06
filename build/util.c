@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "util.h"
@@ -31,4 +32,14 @@ xrealloc(void *p, size_t n)
 	if (!np)
 		abort();
 	return np;
+}
+
+char *
+xstrdup(const char *s)
+{
+	char *ns;
+	ns = strdup(s);
+	if (!ns)
+		abort();
+	return ns;
 }

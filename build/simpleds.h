@@ -38,4 +38,27 @@ array_pop(struct Array *arr);
 void
 array_destroy(struct Array *arr);
 
+typedef char *Str;
+
+Str
+str_alloc(void);
+void
+str_free(Str s);
+size_t
+str_len(Str s);
+size_t
+str_relen(Str s);
+Str
+str_growto(Str s, size_t len);
+Str
+str_concat(Str restrict dest, Str restrict src);
+Str
+str_concatraw(Str restrict dest, const char *restrict src);
+Str
+str_merge(Str restrict dest, Str restrict src);
+Str
+str_fromraw(Str restrict s, const char *restrict buf);
+Str
+str_dupl(Str s);
+
 #endif

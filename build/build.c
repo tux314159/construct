@@ -8,101 +8,11 @@
 #include "build.h"
 #include "simpleds.h"
 #include "table.h"
+#include "target.h"
 #include "threadpool.h"
 #include "util.h"
 
-static char *
-strdup_s(const char *s)
-{
-	char *ns;
-	ns = strdup(s);
-	if (!ns)
-		abort();
-	return ns;
-}
-
-char *
-format_cmd(const char *s, const char *name, struct Array *deps)
-{
-	char *res_buf;
-	size_t res_len;
-	FILE *res;
-
-	int special = 0, escaped = 0;
-
-	res = open_memstream(&res_buf, &res_len);
-	if (!res)
-		abort();
-
-	for (const char *c = s; c < s + strlen(s); c++) {
-		if (special) {
-			special = 0;
-			if (escaped)
-				continue;
-			switch (*c) {
-			case '@':
-				fprintf(res, "%s", name);
-				break;
-			case '<':
-				fprintf(res, "%s", (char *)deps->data[0]);
-				break;
-			case '^':
-				for (size_t i = 0; i < deps->len; i++)
-					fprintf(res, "%s ", (char *)deps->data[i]);
-				break;
-			}
-		} else {
-			switch (*c) {
-			case '\\':
-				escaped = 1;
-				continue;
-			case '$':
-				special = 1;
-				break;
-			default:
-				fprintf(res, "%c", *c);
-				break;
-			}
-		}
-		escaped = 0;
-	}
-
-	fclose(res);
-	return res_buf;
-}
-
-struct Target *
-target_make(const char *name, const char *cmd, ...)
-{
-	va_list args;
-	char *arg;
-	struct Target *target;
-
-	target = xmalloc(sizeof(*target));
-	target->name = strdup_s(name);
-	array_init(&target->deps);
-	array_init(&target->codeps);
-
-	atomic_init(&target->n_sat_dep, 0);
-	target->visited = 0;
-
-	// These must be pushed in order!
-	va_start(args, cmd);
-	while ((arg = va_arg(args, char *)))
-		array_push(&target->deps, arg);
-
-	target->raw_cmd = cmd ? strdup_s(cmd) : NULL;
-
-	return target;
-}
-
-void
-target_add_dep(struct Target *parent, const char *dep_name)
-{
-	array_push(&parent->deps, strdup_s(dep_name));
-}
-
-int
+static int
 target_check_ood(struct Target *targ)
 {
 	int out_of_date;
@@ -137,11 +47,9 @@ int
 target_run(struct Target *targ)
 {
 	int status;
-	char *cmd;
-	cmd = format_cmd(targ->raw_cmd, targ->name, &targ->deps);
-	log(msgt_raw, "%s", cmd);
-	status = system(cmd);
-	free(cmd);
+	if (str_len(targ->cmd))
+		log(msgt_raw, "%s", targ->cmd);
+	status = system(targ->cmd);
 	return WEXITSTATUS(status);
 }
 
@@ -169,7 +77,7 @@ graph_get_target(struct Depgraph *graph, const char *targ_name)
 	return targ ? *targ : NULL;
 }
 
-// BFS from the final target, prune, and find leaves
+/* BFS from the final target, prune, and find leaves */
 static inline struct Array
 graph_prepare(struct Depgraph *graph, struct Target *final_targ)
 {
@@ -188,23 +96,27 @@ graph_prepare(struct Depgraph *graph, struct Target *final_targ)
 
 		targ = queue_pop(&queue);
 		if (targ->deps.len == 0)
-			array_push(&leaves, targ); // collate leaves
+			array_push(&leaves, targ);
 
 		for (size_t i = 0; i < targ->deps.len; i++) {
 			struct Target **c;
 			c = (struct Target **)
 				table_find(&graph->targets, targ->deps.data[i]);
 			if (!c) {
-				// If sought-after dependency doesn't exist, it may
-				// be a source file, try to find and add it
+				/* If a dependency doesn't exist, it may be a source file */
 				if (stat(targ->deps.data[i], &sb) == -1)
-					die("bad target: %s", (char *)targ->deps.data[i]);
-				new = target_make(targ->deps.data[i], NULL, NULL);
+					die("bad target: %s", (Str)targ->deps.data[i]);
+				new = target_from_rule(make_rule(
+					FRAG_CONSTRUCTOR(target)(targ->deps.data[i]),
+					NULL,
+					NULL,
+					0
+				));
 				graph_add_target(graph, new);
 				c = &new;
 			}
-			array_push(&(*c)->codeps, targ); // fill up codeps
 
+			array_push(&(*c)->codeps, targ); /* fill up codeps */
 			if (!(*c)->visited) {
 				queue_push(&queue, *c);
 				(*c)->visited = 1;
@@ -228,7 +140,7 @@ graph_run_target(void *_args)
 	int status;
 
 	if ((targ->deps.len == 0 || target_check_ood(targ)) &&
-	    targ->raw_cmd) { // phony if it has no deps
+	    targ->cmd) { /* phony if it has no deps */
 		status = target_run(targ);
 		if (status) {
 			log(msgt_err, "job failed with exit status %d\n", status);
@@ -258,11 +170,11 @@ graph_build(
 	leaves = graph_prepare(graph, final_targ);
 	threadpool_init(&threadpool, max_jobs, sizeof(struct WorkerArg));
 
-	// Multisource BFS from each source
-	// NOTE: visited is flipped
+	/* Multisource BFS from each leaf
+	 * NOTE: visited is flipped */
 	queue_init(&queue, graph->n_targets);
 	for (size_t i = 0; i < leaves.len; i++) {
-		queue_push(&queue, leaves.data[i]); // start from each leaf
+		queue_push(&queue, leaves.data[i]);
 		((struct Target *)(leaves.data[i]))->visited = 0;
 	}
 
@@ -270,9 +182,9 @@ graph_build(
 		struct Target *targ;
 		struct WorkerArg args;
 
-		// For every target depending on us we keep track of the
-		// number of satisfied targets and only build it if all
-		// its targets are satisfied
+		/* For every target depending on us we keep track of the
+		 * number of satisfied targets and only build it if all
+		 * its targets are satisfied */
 		targ = queue_pop(&queue);
 		if (targ->n_sat_dep < targ->deps.len) {
 			queue_push(&queue, targ);
@@ -290,7 +202,6 @@ graph_build(
 			c->visited = 0;
 			queue_push(&queue, c);
 		}
-
 	}
 
 	threadpool_destroy(&threadpool);

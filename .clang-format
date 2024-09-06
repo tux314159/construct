@@ -52,5 +52,7 @@ SpaceBeforeCaseColon:           false
 UseCRLF:                        false
 UseTab:                         AlignWithSpaces
 
-IndentPPDirectives: AfterHash
+#IndentPPDirectives: AfterHash
+Macros:
+- FRAG_T(t)=struct t
 ...
