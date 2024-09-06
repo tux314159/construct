@@ -1,6 +1,7 @@
 #include <stdatomic.h>
 #include <unistd.h>
 
+#include "target.h"
 #include "simpleds.h"
 #include "table.h"
 
@@ -18,15 +19,6 @@
 #endif
 
 #ifndef INCLUDE_BUILD_H
-struct Target {
-	char *name;
-	char *raw_cmd;
-	struct Array deps;
-	struct Array codeps; // NOTE: array of struct Target *
-	atomic_size_t n_sat_dep;
-	char visited;
-};
-
 struct Depgraph {
 	size_t n_targets;
 	struct Table targets;
@@ -38,13 +30,6 @@ DECLARE(
 	format_cmd,
 	(const char *s, const char *name, struct Array *deps)
 );
-
-// WARNING: must end arglist with null!
-DECLARE(struct Target *, target_make, (const char *name, const char *cmd, ...));
-
-DECLARE(void, target_add_dep, (struct Target * parent, const char *dep_name));
-
-DECLARE(int, target_check_ood, (struct Target * targ));
 
 DECLARE(int, target_run, (struct Target * targ));
 
