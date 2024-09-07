@@ -5,10 +5,10 @@
 #include <stddef.h>
 
 #ifndef TABLE_INIT_SLOTS
-#	define TABLE_INIT_SLOTS 4
+#define TABLE_INIT_SLOTS 4
 #endif
 #ifndef TABLE_RESIZE_RATIO
-#	define TABLE_RESIZE_RATIO 70
+#define TABLE_RESIZE_RATIO 70
 #endif
 
 static_assert(
@@ -29,7 +29,6 @@ static_assert(
 	TABLE_INIT_SLOTS * TABLE_RESIZE_RATIO < (TABLE_INIT_SLOTS - 1) * 100,
 	"too few initial slots, or ratio is too large"
 );
-
 
 struct TableEntry {
 	char *key;
@@ -56,5 +55,13 @@ int
 table_delete(struct Table *tbl, const char *key);
 void **
 table_find(struct Table *tbl, const char *key);
+
+#define TABLE_ITER(_tbl, _it)                    \
+	for (struct TableEntry *_it = (_tbl)->slots; \
+	     _it < (_tbl)->slots + (_tbl)->n_slots;  \
+	     it++)
+#define TABLE_ITER_SKIP_INVALID(_tbl, _it)              \
+	if (!it->key || it->key == (char *)&(_tbl)->n_tomb) \
+		continue;
 
 #endif

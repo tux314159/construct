@@ -8,18 +8,20 @@
 #define FRAG_RENDERER_IMPL(_frag_type) render_frag_##_frag_type
 #define FRAG_RENDERER(_frag_type) render_frag_##_frag_type##_
 #define FRAG_CONSTRUCTOR(_frag_type) make_frag_##_frag_type##_
+#define FRAG_DESTRUCTOR(_frag_type) destroy_frag_##_frag_type##_
 
-#define FRAGTYPE_DECL(_frag_type, _frag_fields, _frag_init_args) \
-	struct Frag_##_frag_type {                                   \
-		struct FragBase base;                                    \
-		_frag_fields                                             \
-	};                                                           \
-	FRAG_T(_frag_type) * FRAG_CONSTRUCTOR(_frag_type)(_frag_init_args);
+#define FRAGTYPE_DECL(_frag_type, _frag_fields, _frag_init_args)        \
+	struct Frag_##_frag_type {                                          \
+		struct FragBase base;                                           \
+		_frag_fields                                                    \
+	};                                                                  \
+	FRAG_T(_frag_type) * FRAG_CONSTRUCTOR(_frag_type)(_frag_init_args); \
+	Str FRAG_DESTRUCTOR(_frag_type)(struct FragBase * frag); /* cursed */
 
 struct Rule {
 	FRAG_T(target) *targ; /* TargetFrag */
 	struct Array deps;  /* DepFrag */
-	struct Array frags;  /* FragBase */
+	struct Array frags; /* FragBase */
 };
 
 struct Target {
@@ -33,7 +35,8 @@ struct Target {
 
 struct FragBase {
 	void (*render_frag)(struct FragBase *, struct Rule *);
-	Str buf;
+	Str (*destructor)(struct FragBase *frag);
+	Str buf; /* WARNING: DO NOT FREE! */
 };
 
 typedef void (*FragRenderer)(struct FragBase *, struct Rule *);
@@ -59,7 +62,11 @@ make_rule(
 Str
 render_rule(struct Rule *rule);
 
+/* WARNING: destroys the rule */
 struct Target *
 target_from_rule(struct Rule *rule);
+
+void
+target_destroy(struct Target *targ);
 
 #endif

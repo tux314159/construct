@@ -1,7 +1,7 @@
 ---
 Language:        Cpp
 ColumnLimit:     80
-ForEachMacros:   []
+ForEachMacros:   [HASH_ITER]
 
 AlignAfterOpenBracket:          BlockIndent
 AlignConsecutiveMacros:         false

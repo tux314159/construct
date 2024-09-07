@@ -23,6 +23,8 @@
 	(void)argc;                               \
 	(void)argv; // later
 
+#define construction_done() graph_destroy(_construct_graph);
+
 #define construct(targ_name, njobs)                                   \
 	_DSL_DECL_STMT(graph_build(                                       \
 					   _construct_graph,                              \
@@ -83,5 +85,5 @@ _needs_impl(size_t n, ...)
 
 #endif
 
-#define POISON_EXPORTS
+//#define POISON_EXPORTS
 #include "build.h"

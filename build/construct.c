@@ -20,4 +20,5 @@ main(int argc, char **argv)
 
 	construct("testproj/main", 2);
 	log(msgt_info, "build complete", 0);
+	construction_done();
 }

@@ -124,6 +124,7 @@ graph_prepare(struct Depgraph *graph, struct Target *final_targ)
 		}
 	}
 
+	queue_destroy(&queue);
 	return leaves;
 }
 
@@ -207,4 +208,14 @@ graph_build(
 	threadpool_destroy(&threadpool);
 	queue_destroy(&queue);
 	array_destroy(&leaves);
+}
+
+void
+graph_destroy(struct Depgraph *graph)
+{
+	TABLE_ITER(&graph->targets, it) {
+		TABLE_ITER_SKIP_INVALID(&graph->targets, it);
+		target_destroy(it->val);
+	}
+	table_destroy(&graph->targets);
 }

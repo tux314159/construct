@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <string.h>
 
 #include "target.h"
@@ -20,17 +21,16 @@ init_fragbase(struct FragBase *base, FragRenderer render_frag)
 		struct Rule * rule                                                \
 	)                                                                     \
 	{                                                                     \
-		if (frag->buf)                                                    \
-			str_free(frag->buf);                                          \
-		frag->buf = str_alloc();                                          \
 		FRAG_RENDERER_IMPL(_frag_type)((FRAG_T(_frag_type) *)frag, rule); \
-		(void)rule;                                                       \
 	}
 
 #define SUPER(_frag) ((struct FragBase *)_frag)
 
-#define SUPER_INIT(_frag, _frag_type) \
-	init_fragbase(&_frag->base, FRAG_RENDERER(_frag_type))
+#define SUPER_INIT(_frag, _frag_type)                           \
+	do {                                                        \
+		init_fragbase(&_frag->base, FRAG_RENDERER(_frag_type)); \
+		SUPER(_frag)->destructor = FRAG_DESTRUCTOR(_frag_type); \
+	} while (0)
 
 FRAGTYPE_DEF(target);
 
@@ -42,6 +42,15 @@ FRAG_CONSTRUCTOR(target)(const char *name)
 	SUPER_INIT(frag, target);
 	frag->name = str_fromraw(NULL, name);
 	return frag;
+}
+
+Str
+FRAG_DESTRUCTOR(target)(struct FragBase *frag)
+{
+	Str ret = SUPER(frag)->buf;
+	str_free(((FRAG_T(target) *)frag)->name);
+	free(frag);
+	return ret;
 }
 
 static void
@@ -63,6 +72,15 @@ FRAG_CONSTRUCTOR(dep)(const char *name)
 	return frag;
 }
 
+Str
+FRAG_DESTRUCTOR(dep)(struct FragBase *frag)
+{
+	Str ret = SUPER(frag)->buf;
+	str_free(((FRAG_T(dep) *)frag)->name);
+	free(frag);
+	return ret;
+}
+
 static void
 FRAG_RENDERER_IMPL(dep)(FRAG_T(dep) *frag, struct Rule *rule)
 {
@@ -80,6 +98,15 @@ FRAG_CONSTRUCTOR(lit)(const char *name)
 	SUPER_INIT(frag, lit);
 	frag->str = str_fromraw(NULL, name);
 	return frag;
+}
+
+Str
+FRAG_DESTRUCTOR(lit)(struct FragBase *frag)
+{
+	Str ret = SUPER(frag)->buf;
+	str_free(((FRAG_T(lit) *)frag)->str);
+	free(frag);
+	return ret;
 }
 
 static void
@@ -111,6 +138,14 @@ FRAG_RENDERER_IMPL(depidx)(FRAG_T(depidx) *frag, struct Rule *rule)
 			str_dupl(((FRAG_T(dep) *)rule->deps.data[frag->idx - 1])->base.buf);
 }
 
+Str
+FRAG_DESTRUCTOR(depidx)(struct FragBase *frag)
+{
+	Str ret = SUPER(frag)->buf;
+	free(frag);
+	return ret;
+}
+
 FRAGTYPE_DEF(alldeps);
 
 FRAG_T(alldeps) *
@@ -122,12 +157,21 @@ FRAG_CONSTRUCTOR(alldeps)(void)
 	return frag;
 }
 
+Str
+FRAG_DESTRUCTOR(alldeps)(struct FragBase *frag)
+{
+	Str ret = SUPER(frag)->buf;
+	free(frag);
+	return ret;
+}
+
 static void
 FRAG_RENDERER_IMPL(alldeps)(FRAG_T(alldeps) *frag, struct Rule *rule)
 {
+	SUPER(frag)->buf = str_alloc();
 	for (void **dep = rule->deps.data; dep < rule->deps.data + rule->deps.len;
 	     dep++)
-		SUPER(frag)->buf = str_concat(
+		SUPER(frag)->buf = str_merge(
 			SUPER(frag)->buf,
 			str_concatraw(str_dupl(SUPER(*dep)->buf), " ")
 		);
@@ -147,9 +191,12 @@ make_rule(
 	array_init(&rule->deps);
 	array_init(&rule->frags);
 	rule->targ = targ;
-	if (deps)
+	if (deps) {
 		for (void **dep = deps->data; dep < deps->data + deps->len; dep++)
 			array_push(&rule->deps, *dep);
+		array_destroy(deps);
+		free(deps);
+	}
 	if (frags)
 		for (struct FragBase **cmd = frags; cmd < frags + n_frags; cmd++)
 			array_push(&rule->frags, *cmd);
@@ -157,7 +204,7 @@ make_rule(
 	return rule;
 }
 
-/* Renders all fragments, and also constructs the command */
+/* Renders all fragments, and constructs the command */
 Str
 render_rule(struct Rule *rule)
 {
@@ -168,35 +215,57 @@ render_rule(struct Rule *rule)
 	for (void **dep = rule->deps.data; dep < rule->deps.data + rule->deps.len;
 	     dep++)
 		SUPER(*dep)->render_frag(SUPER(*dep), rule);
-	for (void **cmd = rule->frags.data;
-	     cmd < rule->frags.data + rule->frags.len;
-	     cmd++)
-		SUPER(*cmd)->render_frag(SUPER(*cmd), rule);
+	for (void **frag = rule->frags.data;
+	     frag < rule->frags.data + rule->frags.len;
+	     frag++)
+		SUPER(*frag)->render_frag(SUPER(*frag), rule);
 
 	for (void **cmd = rule->frags.data;
 	     cmd < rule->frags.data + rule->frags.len;
 	     cmd++)
-		buf = str_merge(buf, SUPER(*cmd)->buf); /* XXX destructive */
+		buf = str_concat(buf, SUPER(*cmd)->buf);
 	return buf;
 }
 
+/* Besides just constructing the target it also quasi-destructs
+ * the entire rule and all its constituent objects. This is probably
+ * the worst way I could've possibly done this. */
 struct Target *
 target_from_rule(struct Rule *rule)
 {
-	struct Target *target;
+	struct Target *targ;
 
-	target = xmalloc(sizeof(*target));
-	target->cmd = render_rule(rule);
+	targ = xmalloc(sizeof(*targ));
+	targ->cmd = render_rule(rule);
+	targ->name = SUPER(rule->targ)->destructor(SUPER(rule->targ));
+	targ->visited = false;
+	atomic_init(&targ->n_sat_dep, 0);
+	array_init(&targ->codeps);
+	array_init(&targ->deps);
+	for (size_t i = 0; i < rule->deps.len; i++) {
+		FRAG_T(dep) *dep = rule->deps.data[i];
+		array_push(&targ->deps, SUPER(dep)->destructor(SUPER(dep)));
+	}
 
-	target->name = SUPER(rule->targ)->buf;
-	array_init(&target->deps);
-	array_init(&target->codeps);
+	for (size_t i = 0; i < rule->frags.len; i++) {
+		struct FragBase *frag = rule->frags.data[i];
+		str_free(frag->destructor(frag));
+	}
+	array_destroy(&rule->deps);
+	array_destroy(&rule->frags);
+	free(rule);
 
-	atomic_init(&target->n_sat_dep, 0);
-	target->visited = 0;
+	return targ;
+}
 
-	for (size_t i = 0; i < rule->deps.len; i++)
-		array_push(&target->deps, SUPER((FRAG_T(dep) *)rule->deps.data[i])->buf);
-
-	return target;
+void
+target_destroy(struct Target *targ)
+{
+	str_free(targ->name);
+	str_free(targ->cmd);
+	for (size_t i = 0; i < targ->deps.len; i++)
+		str_free(targ->deps.data[i]);
+	array_destroy(&targ->deps);
+	array_destroy(&targ->codeps);
+	free(targ);
 }

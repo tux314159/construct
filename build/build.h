@@ -53,6 +53,9 @@ DECLARE(
 	(struct Depgraph * graph, struct Target *final_targ, unsigned max_jobs)
 );
 
+void
+graph_destroy(struct Depgraph *graph);
+
 #ifndef INCLUDE_BUILD_H
 #	define INCLUDE_BUILD_H
 #endif
