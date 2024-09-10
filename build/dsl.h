@@ -85,5 +85,5 @@ _needs_impl(size_t n, ...)
 
 #endif
 
-//#define POISON_EXPORTS
+#define POISON_EXPORTS
 #include "build.h"
